@@ -1,4 +1,3 @@
-import axios from 'axios';
 import { Indexer, Ingest, ParseMode, TxoStore } from 'spv-store';
 import { MNEE_API, MNEE_API_TOKEN } from './constants';
 
@@ -21,7 +20,13 @@ export class MNEEIndexer extends Indexer {
 
   async sync(txoStore: TxoStore, ingestQueue: { [txid: string]: Ingest }): Promise<number> {
     if (this.network !== 'mainnet') return 0;
-    const { data } = await axios.post<TxResult[]>(`${MNEE_API}/v1/sync?auth_token=${MNEE_API_TOKEN}`, [...this.owners]);
+    const response = await fetch(`${MNEE_API}/v1/sync?auth_token=${MNEE_API_TOKEN}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify([...this.owners]),
+    });
+    if (!response.ok) throw new Error(`MNEE sync failed: ${response.status}`);
+    const data = await response.json() as TxResult[];
     console.log('Syncing', data.length, 'mnee for ', [...txoStore.owners]);
     let maxScore = 0;
     for (const d of data) {

@@ -1,4 +1,3 @@
-import axios from 'axios';
 import { Bsv20, BSV20Txo, NetWork, Ordinal } from 'yours-wallet-provider';
 import { GP_BASE_URL, GP_TESTNET_BASE_URL } from '../utils/constants';
 import { MarketResponse, Token } from './types/gorillaPool.types';
@@ -14,8 +13,9 @@ export class GorillaPoolService {
   getUtxoByOutpoint = async (outpoint: string): Promise<Ordinal> => {
     try {
       const network = this.chromeStorageService.getNetwork();
-      const { data } = await axios.get(`${this.getBaseUrl(network)}/api/txos/${outpoint}?script=true`);
-      const ordUtxo: Ordinal = data;
+      const res = await fetch(`${this.getBaseUrl(network)}/api/txos/${outpoint}?script=true`);
+      if (!res.ok) throw new Error(`Failed to fetch outpoint: ${res.status}`);
+      const ordUtxo: Ordinal = await res.json();
       if (!ordUtxo.script) throw Error('No script when fetching by outpoint');
       return ordUtxo;
     } catch (e) {
@@ -27,11 +27,13 @@ export class GorillaPoolService {
     const network = this.chromeStorageService.getNetwork();
     const result: { id: string; satPrice: number }[] = [];
     for (const tokenId of tokenIds) {
-      const { data } = await axios.get<MarketResponse[]>(
+      const res = await fetch(
         `${this.getBaseUrl(network)}/api/bsv20/market?sort=price_per_token&dir=asc&limit=1&offset=0&${
           tokenId.length > 30 ? 'id' : 'tick'
         }=${tokenId}`,
       );
+      if (!res.ok) continue;
+      const data = await res.json() as MarketResponse[];
       if (data.length > 0) {
         result.push({ id: tokenId, satPrice: data[0].pricePer });
       }
@@ -42,9 +44,11 @@ export class GorillaPoolService {
   getBsv20Balances = async (addresses: string[]) => {
     const network = this.chromeStorageService.getNetwork();
     const url = `${this.getBaseUrl(network)}/api/bsv20/balance?addresses=${addresses.join('&addresses=')}`;
-    const res = await axios.get(url);
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Failed to fetch BSV20 balances: ${res.status}`);
+    const resData = await res.json();
 
-    const bsv20List: Array<Bsv20> = res.data.map(
+    const bsv20List: Array<Bsv20> = resData.map(
       (b: {
         all: {
           confirmed: string;
@@ -93,8 +97,10 @@ export class GorillaPoolService {
             ? `${this.getBaseUrl(network)}/api/bsv20/${address}/id/${tick}?limit=10000`
             : `${this.getBaseUrl(network)}/api/bsv20/${address}/tick/${tick}?limit=10000`;
 
-          const r = await axios.get(url);
-          (r.data as BSV20Txo[]).forEach((utxo) => {
+          const r = await fetch(url);
+          if (!r.ok) return;
+          const rData = await r.json();
+          (rData as BSV20Txo[]).forEach((utxo) => {
             if (utxo.status === 1 && !utxo.listing) utxos.push(utxo);
           });
         }),
@@ -114,9 +120,9 @@ export class GorillaPoolService {
         ? `${this.getBaseUrl(network)}/api/bsv20/id/${tick}`
         : `${this.getBaseUrl(network)}/api/bsv20/tick/${tick}`;
 
-      const r = await axios.get<Token>(url);
-
-      return r.data;
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`Failed to fetch BSV20 details: ${r.status}`);
+      return await r.json() as Token;
     } catch (error) {
       console.error('getBsv20Details', error);
     }
