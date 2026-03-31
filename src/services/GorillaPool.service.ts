@@ -32,7 +32,7 @@ export class GorillaPoolService {
           tokenId.length > 30 ? 'id' : 'tick'
         }=${tokenId}`,
       );
-      if (!res.ok) continue;
+      if (!res.ok) throw new Error(`Failed to fetch token price: ${res.status}`);
       const data = await res.json() as MarketResponse[];
       if (data.length > 0) {
         result.push({ id: tokenId, satPrice: data[0].pricePer });
@@ -98,7 +98,7 @@ export class GorillaPoolService {
             : `${this.getBaseUrl(network)}/api/bsv20/${address}/tick/${tick}?limit=10000`;
 
           const r = await fetch(url);
-          if (!r.ok) return;
+          if (!r.ok) throw new Error(`Failed to fetch BSV20 UTXOs: ${r.status}`);
           const rData = await r.json();
           (rData as BSV20Txo[]).forEach((utxo) => {
             if (utxo.status === 1 && !utxo.listing) utxos.push(utxo);

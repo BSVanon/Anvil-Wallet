@@ -162,7 +162,8 @@ export class KeysService {
       if (!res.ok) throw new Error(`WoC request failed: ${res.status}`);
       const utxos = await res.json() as WocUtxo[];
       if (utxos.length === 0) return 0;
-      return utxos.reduce((acc, u) => acc + u.value, 0);
+      const balance = utxos.reduce((acc, u) => acc + u.value, 0);
+      return balance;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
       console.log(error);
