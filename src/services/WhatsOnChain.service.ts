@@ -1,4 +1,3 @@
-import axios from 'axios';
 import { NetWork } from 'yours-wallet-provider';
 import { WOC_BASE_URL, WOC_TESTNET_BASE_URL } from '../utils/constants';
 import { ChromeStorageService } from './ChromeStorage.service';
@@ -28,12 +27,11 @@ export class WhatsOnChainService {
       if (exchangeRateCache?.rate && Date.now() - exchangeRateCache.timestamp < 5 * 60 * 1000) {
         return Number(exchangeRateCache.rate.toFixed(2));
       } else {
-        const res = await axios.get(`${this.getBaseUrl(network)}/exchangerate`, this.config);
-        if (!res.data) {
-          throw new Error('Could not fetch exchange rate from WOC!');
-        }
+        const res = await fetch(`${this.getBaseUrl(network)}/exchangerate`, { headers: this.config.headers });
+        if (!res.ok) throw new Error('Could not fetch exchange rate from WOC!');
+        const data = await res.json();
 
-        const rate = Number(res.data.rate.toFixed(2));
+        const rate = Number(data.rate.toFixed(2));
         const currentTime = Date.now();
         await this.chromeStorageService.update({ exchangeRateCache: { rate, timestamp: currentTime } });
         return rate;
@@ -46,8 +44,9 @@ export class WhatsOnChainService {
   getRawTxById = async (txid: string): Promise<string | undefined> => {
     try {
       const network = this.chromeStorageService.getNetwork();
-      const { data } = await axios.get(`${this.getBaseUrl(network)}/tx/${txid}/hex`, this.config);
-      return data;
+      const res = await fetch(`${this.getBaseUrl(network)}/tx/${txid}/hex`, { headers: this.config.headers });
+      if (!res.ok) throw new Error(`Failed to get raw tx: ${res.status}`);
+      return res.text();
     } catch (error) {
       console.log(error);
     }
@@ -56,15 +55,19 @@ export class WhatsOnChainService {
   broadcastRawTx = async (txhex: string): Promise<string | undefined> => {
     try {
       const network = this.chromeStorageService.getNetwork();
-      const { data: txid } = await axios.post(`${this.getBaseUrl(network)}/tx/raw`, { txhex }, this.config);
-      return txid;
-    } catch (error) {
-      if (axios.isAxiosError(error) && error.response) {
-        // Access to config, request, and response
-        console.error('broadcast rawtx failed:', error.response.data);
-      } else {
-        console.error('broadcast rawtx failed:', error);
+      const res = await fetch(`${this.getBaseUrl(network)}/tx/raw`, {
+        method: 'POST',
+        headers: { ...this.config.headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ txhex }),
+      });
+      if (!res.ok) {
+        const errorBody = await res.text().catch(() => 'unknown');
+        console.error('broadcast rawtx failed:', errorBody);
+        return;
       }
+      return res.json();
+    } catch (error) {
+      console.error('broadcast rawtx failed:', error);
     }
   };
 
@@ -97,8 +100,9 @@ export class WhatsOnChainService {
   getChainInfo = async (): Promise<ChainInfo | undefined> => {
     try {
       const network = this.chromeStorageService.getNetwork();
-      const { data } = await axios.get(`${this.getBaseUrl(network)}/chain/info`, this.config);
-      return data as ChainInfo;
+      const res = await fetch(`${this.getBaseUrl(network)}/chain/info`, { headers: this.config.headers });
+      if (!res.ok) throw new Error(`Failed to get chain info: ${res.status}`);
+      return await res.json() as ChainInfo;
     } catch (error) {
       console.log(error);
     }

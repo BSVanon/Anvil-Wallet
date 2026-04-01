@@ -17,7 +17,6 @@ import { SupportedWalletImports, WifKeys } from './types/keys.types';
 import { P2PKH, PrivateKey, SatoshisPerKilobyte, Transaction, Utils } from '@bsv/sdk';
 import { SPVStore } from 'spv-store';
 import { WocUtxo } from './types/whatsOnChain.types';
-import axios from 'axios';
 
 export class KeysService {
   bsvAddress: string;
@@ -130,8 +129,9 @@ export class KeysService {
       const outScript = new P2PKH().lock(keys.walletAddress);
       tx.addOutput({ lockingScript: outScript, change: true });
 
-      const { data } = await axios.get<WocUtxo[]>(`${WOC_BASE_URL}/address/${sweepWallet.address}/unspent`);
-      const utxos = data;
+      const res = await fetch(`${WOC_BASE_URL}/address/${sweepWallet.address}/unspent`);
+      if (!res.ok) throw new Error(`WoC request failed: ${res.status}`);
+      const utxos = await res.json() as WocUtxo[];
       if (utxos.length === 0) return;
       const feeModel = new SatoshisPerKilobyte(this.chromeStorageService.getCustomFeeRate());
       for await (const u of utxos || []) {
@@ -158,8 +158,9 @@ export class KeysService {
   getWifBalance = async (wif: string) => {
     try {
       const privKey = PrivateKey.fromWif(wif);
-      const { data } = await axios.get<WocUtxo[]>(`${WOC_BASE_URL}/address/${privKey.toAddress()}/unspent`);
-      const utxos = data;
+      const res = await fetch(`${WOC_BASE_URL}/address/${privKey.toAddress()}/unspent`);
+      if (!res.ok) throw new Error(`WoC request failed: ${res.status}`);
+      const utxos = await res.json() as WocUtxo[];
       if (utxos.length === 0) return 0;
       const balance = utxos.reduce((acc, u) => acc + u.value, 0);
       return balance;
@@ -177,8 +178,9 @@ export class KeysService {
       const outScript = new P2PKH().lock(this.bsvAddress);
       tx.addOutput({ lockingScript: outScript, change: true });
 
-      const { data } = await axios.get<WocUtxo[]>(`${WOC_BASE_URL}/address/${privKey.toAddress()}/unspent`);
-      const utxos = data;
+      const res = await fetch(`${WOC_BASE_URL}/address/${privKey.toAddress()}/unspent`);
+      if (!res.ok) throw new Error(`WoC request failed: ${res.status}`);
+      const utxos = await res.json() as WocUtxo[];
       if (utxos.length === 0) return;
       const feeModel = new SatoshisPerKilobyte(this.chromeStorageService.getCustomFeeRate());
       for await (const u of utxos || []) {
