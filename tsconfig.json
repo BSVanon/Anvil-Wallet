@@ -15,7 +15,8 @@
     "isolatedModules": false,
     "noEmit": true,
     "jsx": "react-jsx",
-    "types": ["chrome"]
+    "types": ["chrome"],
+    "ignoreDeprecations": "6.0"
   },
   "include": ["src"]
 }
