@@ -27,7 +27,9 @@ import { truncate } from '../utils/format';
 import { theme } from '../theme';
 import { GorillaPoolService } from './GorillaPool.service';
 import { Token } from './types/gorillaPool.types';
+import { WhatsOnChainService } from './WhatsOnChain.service';
 import { broadcastMultiSource } from '../utils/broadcast';
+import { getTxWithFallback } from '../utils/txFetch';
 
 const client = new PaymailClient();
 
@@ -38,6 +40,7 @@ export class OrdinalService {
     private readonly oneSatSPV: SPVStore,
     private readonly chromeStorageService: ChromeStorageService,
     private readonly gorillaPoolService: GorillaPoolService,
+    private readonly wocService: WhatsOnChainService,
   ) {}
 
   getOrdinals = async (from = ''): Promise<PaginatedOrdinalsResponse> => {
@@ -96,7 +99,7 @@ export class OrdinalService {
       if (!u) return { error: 'no-ordinal' };
       const pk = pkMap.get(u.owner || '');
       if (!pk) return { error: 'no-keys' };
-      const sourceTransaction = await this.oneSatSPV.getTx(u.outpoint.txid);
+      const sourceTransaction = await getTxWithFallback(this.oneSatSPV, this.wocService, u.outpoint.txid);
       if (!sourceTransaction) {
         console.log(`Could not find source transaction ${u.outpoint.txid}`);
         return { error: 'source-tx-not-found' };
@@ -134,7 +137,7 @@ export class OrdinalService {
       for await (const u of fundResults || []) {
         const pk = pkMap.get(u.owner || '');
         if (!pk) continue;
-        const sourceTransaction = await this.oneSatSPV.getTx(u.outpoint.txid);
+        const sourceTransaction = await getTxWithFallback(this.oneSatSPV, this.wocService, u.outpoint.txid);
         if (!sourceTransaction) {
           console.log(`Could not find source transaction ${u.outpoint.txid}`);
           return { error: 'source-tx-not-found' };

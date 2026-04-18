@@ -17,7 +17,9 @@ import { SupportedWalletImports, WifKeys } from './types/keys.types';
 import { P2PKH, PrivateKey, SatoshisPerKilobyte, Transaction, Utils } from '@bsv/sdk';
 import { SPVStore } from 'spv-store';
 import { WocUtxo } from './types/whatsOnChain.types';
+import { WhatsOnChainService } from './WhatsOnChain.service';
 import { broadcastMultiSource } from '../utils/broadcast';
+import { getTxWithFallback } from '../utils/txFetch';
 
 export class KeysService {
   bsvAddress: string;
@@ -29,6 +31,7 @@ export class KeysService {
   constructor(
     private readonly chromeStorageService: ChromeStorageService,
     private readonly oneSatSPV: SPVStore,
+    private readonly wocService: WhatsOnChainService,
   ) {
     this.bsvAddress = '';
     this.ordAddress = '';
@@ -137,7 +140,7 @@ export class KeysService {
       const feeModel = new SatoshisPerKilobyte(this.chromeStorageService.getCustomFeeRate());
       for await (const u of utxos || []) {
         tx.addInput({
-          sourceTransaction: await this.oneSatSPV.getTx(u.tx_hash),
+          sourceTransaction: await getTxWithFallback(this.oneSatSPV, this.wocService, u.tx_hash),
           sourceOutputIndex: u.tx_pos,
           sequence: 0xffffffff,
           unlockingScriptTemplate: new P2PKH().unlock(sweepWallet.privKey),
@@ -186,7 +189,7 @@ export class KeysService {
       const feeModel = new SatoshisPerKilobyte(this.chromeStorageService.getCustomFeeRate());
       for await (const u of utxos || []) {
         tx.addInput({
-          sourceTransaction: await this.oneSatSPV.getTx(u.tx_hash),
+          sourceTransaction: await getTxWithFallback(this.oneSatSPV, this.wocService, u.tx_hash),
           sourceOutputIndex: u.tx_pos,
           sequence: 0xffffffff,
           unlockingScriptTemplate: new P2PKH().unlock(privKey),

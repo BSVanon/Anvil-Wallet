@@ -14,10 +14,13 @@ import {
 import { SPVStore, Txo } from 'spv-store';
 import { LockTemplate } from 'spv-store';
 import { broadcastMultiSource } from '../utils/broadcast';
+import { getTxWithFallback } from '../utils/txFetch';
+import { WhatsOnChainService } from './WhatsOnChain.service';
 export class ContractService {
   constructor(
     private readonly keysService: KeysService,
     private readonly oneSatSPV: SPVStore,
+    private readonly wocService: WhatsOnChainService,
   ) {}
 
   getSignatures = async (
@@ -133,7 +136,7 @@ export class ContractService {
         // );
         // input.sequence = 0;
         tx.addInput({
-          sourceTransaction: await this.oneSatSPV.getTx(lock.outpoint.txid),
+          sourceTransaction: await getTxWithFallback(this.oneSatSPV, this.wocService, lock.outpoint.txid),
           sourceOutputIndex: lock.outpoint.vout,
           sequence: 0,
           unlockingScriptTemplate: new LockTemplate().unlock(

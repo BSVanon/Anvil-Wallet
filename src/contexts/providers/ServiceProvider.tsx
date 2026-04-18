@@ -18,8 +18,8 @@ const initializeServices = async () => {
   const wocService = new WhatsOnChainService(chromeStorageService);
   const gorillaPoolService = new GorillaPoolService(chromeStorageService);
   const oneSatSPV = await oneSatSPVPromise;
-  const keysService = new KeysService(chromeStorageService, oneSatSPV);
-  const contractService = new ContractService(keysService, oneSatSPV);
+  const keysService = new KeysService(chromeStorageService, oneSatSPV, wocService);
+  const contractService = new ContractService(keysService, oneSatSPV, wocService);
   const mneeService = new mnee({ environment: 'production', apiKey: MNEE_API_TOKEN });
 
   const bsvService = new BsvService(keysService, wocService, contractService, chromeStorageService, oneSatSPV);
@@ -29,6 +29,7 @@ const initializeServices = async () => {
     oneSatSPV,
     chromeStorageService,
     gorillaPoolService,
+    wocService,
   );
 
   return {

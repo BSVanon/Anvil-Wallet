@@ -32,6 +32,7 @@ import { theme } from '../theme';
 import { PaymailClient } from '@bsv/paymail/client';
 import { convertLockReqToSendBsvReq } from '../utils/tools';
 import { broadcastMultiSource } from '../utils/broadcast';
+import { getTxWithFallback } from '../utils/txFetch';
 
 const client = new PaymailClient();
 
@@ -117,7 +118,7 @@ export class BsvService {
         const pk = pkMap.get(u.owner || '');
         if (!pk) continue;
         tx.addInput({
-          sourceTransaction: await this.oneSatSPV.getTx(u.outpoint.txid),
+          sourceTransaction: await getTxWithFallback(this.oneSatSPV, this.wocService, u.outpoint.txid),
           sourceOutputIndex: u.outpoint.vout,
           sequence: 0xffffffff,
           unlockingScriptTemplate: new P2PKH().unlock(pk),
@@ -261,7 +262,7 @@ export class BsvService {
       for await (const u of fundResults || []) {
         const pk = pkMap.get(u.owner || '');
         if (!pk) continue;
-        const sourceTransaction = await this.oneSatSPV.getTx(u.outpoint.txid);
+        const sourceTransaction = await getTxWithFallback(this.oneSatSPV, this.wocService, u.outpoint.txid);
         if (!sourceTransaction) {
           console.log(`Could not find source transaction ${u.outpoint.txid}`);
           return { error: 'source-tx-not-found' };
@@ -505,7 +506,7 @@ export class BsvService {
 
     let satsIn = 0;
     for (const input of tx.inputs) {
-      input.sourceTransaction = await this.oneSatSPV.getTx(input.sourceTXID ?? '');
+      input.sourceTransaction = await getTxWithFallback(this.oneSatSPV, this.wocService, input.sourceTXID ?? '');
       satsIn += input.sourceTransaction?.outputs[input.sourceOutputIndex]?.satoshis || 0;
     }
 
@@ -520,7 +521,7 @@ export class BsvService {
       const pk = pkMap.get(u.owner || '');
       if (!pk) continue;
       tx.addInput({
-        sourceTransaction: await this.oneSatSPV.getTx(u.outpoint.txid),
+        sourceTransaction: await getTxWithFallback(this.oneSatSPV, this.wocService, u.outpoint.txid),
         sourceOutputIndex: u.outpoint.vout,
         sequence: 0xffffffff,
         unlockingScriptTemplate: new P2PKH().unlock(pk),
