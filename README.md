@@ -1,8 +1,12 @@
+<p align="center">
+  <img src="public/readme-banner.png" alt="Anvil Wallet" width="400">
+</p>
+
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.md)
 
 # Anvil Wallet
 
-A minimal fork of [Yours Wallet](https://github.com/yours-org/yours-wallet)
+A fork of [Yours Wallet](https://github.com/yours-org/yours-wallet)
 with two targeted hardening upgrades. Non-custodial BSV / 1Sat
 Ordinals / MNEE wallet. BRC-100 compatible.
 
@@ -14,24 +18,24 @@ MNEE integration, multi-account, UI screens. See [LICENSE.md](LICENSE.md) —
 MIT, preserved from upstream; copyright for the base wallet remains
 with Daniel Wagner and David Case.
 
-## The two upgrades
+## The Two Upgrades
 
 ### 1. Security — `axios` removed
 
 All HTTP calls use the browser's native `fetch` API. No third-party
 HTTP library in the wallet's dependency tree. Mitigates the 2024
-`axios` supply-chain attack vector.
+`axios` supply-chain attack vector by removing the entire attack surface.
 
 > This was also merged upstream via
 > [yours-org PR #300](https://github.com/yours-org/yours-wallet/pull/300),
 > so Anvil Wallet inherits this rather than being the originator.
 
-### 2. Redundancy — multi-source chain data
+### 2. Multi-source chain data
 
 Yours Wallet (and forks of it) historically depended on a single pair
 of indexers (`ordinals.1sat.app` + `ordinals.gorillapool.io`). When
 those degrade, the wallet hangs. Anvil Wallet chains through
-redundant sources with fail-closed ordinal safety:
+additional sources with fail-closed ordinal safety:
 
 - **Fund UTXO lookup**: spv-store primary → WhatsOnChain fallback,
   with a local 1Sat inscription-envelope filter so the fallback path
@@ -54,19 +58,6 @@ upstream behavior.
   request a user-half-signed MNEE transfer with optional OP_RETURN
   data, useful for AVOS-style oracle-attested swaps. Additive;
   existing `sendMNEE` flow unchanged.
-
-## Total delta from upstream
-
-**7 commits** above `yours-org/yours-wallet` HEAD `75b18b1`.
-~450 LOC real code diff across 19 files. The full patch catalog with
-design rationale lives in
-[`docs/WALLET_REFORK_PLAN.md`](https://github.com/BSVanon/DEX/blob/main/docs/WALLET_REFORK_PLAN.md)
-in the related Anvil-Swap DEX workspace.
-
-This is a wallet, not a DEX. All swap protocol logic lives in
-[anvil-swap](https://github.com/BSVanon/Anvil-Swap) — the wallet
-works with the Anvil-Swap DEX or any other BRC-100 dApp without
-knowing or caring what they do.
 
 ## Install
 
@@ -107,8 +98,3 @@ same MIT terms; see commit history for authorship.
 
 Forked from [yours-org/yours-wallet](https://github.com/yours-org/yours-wallet)
 at commit `75b18b1`.
-
-The pre-fork Anvil-Wallet (before this minimal re-fork, with
-DEX-specific code that has since been extracted into `anvil-swap`) is
-archived at
-[BSVanon/Anvil-Wallet-legacy-2026-04-17](https://github.com/BSVanon/Anvil-Wallet-legacy-2026-04-17).
