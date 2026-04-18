@@ -34,31 +34,33 @@ export const QueueBanner = () => {
   const { addSnackbar } = useSnackbar();
   const [isInitializing, setIsInitializing] = useState(false);
 
+  // walletImporting is written as the import start timestamp (patch —
+  // upstream used the string 'true' which never expired). Treat a flag
+  // older than FRESH_WINDOW_MS as stale and ignore it so the banner
+  // doesn't stick across reopens.
   useEffect(() => {
-    setTimeout(() => {
-      const localVar = localStorage.getItem('walletImporting');
-      console.log(`Local Storage Says Init Is: ${localVar}`);
-      setIsInitializing(localVar === 'true');
-    }, 1000);
+    const FRESH_WINDOW_MS = 3_000;
+    const check = () => {
+      const raw = localStorage.getItem('walletImporting');
+      if (!raw) {
+        setIsInitializing(false);
+        return;
+      }
+      const ts = Number(raw);
+      if (!Number.isFinite(ts) || Date.now() - ts > FRESH_WINDOW_MS) {
+        // Stale flag — clean it up and drop the banner.
+        localStorage.removeItem('walletImporting');
+        setIsInitializing(false);
+        return;
+      }
+      setIsInitializing(true);
+    };
+    // Initial check on popup mount + re-check every second so the flag
+    // expires automatically while the popup is open.
+    check();
+    const poll = setInterval(check, 1_000);
+    return () => clearInterval(poll);
   }, []);
-
-  // Safety timeout: useQueueTracker's isSyncing starts `true` and only
-  // flips to `false` when a QUEUE_STATUS_UPDATE with queueLength === 0
-  // arrives. For an already-caught-up wallet (e.g. re-restore), spv-store
-  // has nothing to sync and emits no queue events, so isSyncing stays
-  // stuck at true and the banner never clears. Upstream bug that shows
-  // up when a seed is restored into a wallet that then has no new txs
-  // to download. Clear the flag after 20 s of no activity — if real
-  // syncing is happening, queue events will have fired long before.
-  useEffect(() => {
-    if (!isInitializing) return;
-    const timeout = setTimeout(() => {
-      console.log('[QueueBanner] init safety timeout reached — clearing banner');
-      localStorage.removeItem('walletImporting');
-      setIsInitializing(false);
-    }, 20_000);
-    return () => clearTimeout(timeout);
-  }, [isInitializing]);
 
   useEffect(() => {
     if (queueLength || (importName && importName !== 'Wallet')) {
