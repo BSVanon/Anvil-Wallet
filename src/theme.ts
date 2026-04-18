@@ -48,7 +48,7 @@ export const theme: Theme = {
     },
   },
   settings: {
-    repo: 'https://github.com/yours-org/yours-wallet',
+    repo: 'https://github.com/BSVanon/Anvil-Wallet',
     services: {
       apps: true,
       bsv20: true,
@@ -56,6 +56,6 @@ export const theme: Theme = {
       ordinals: true,
       mnee: true,
     },
-    walletName: 'Yours',
+    walletName: 'Anvil',
   },
 };
