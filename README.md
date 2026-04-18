@@ -1,49 +1,114 @@
-![Example Image](/public/banner.png)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.md)
 
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+# Anvil Wallet
 
-Version: v4.5.6
+A minimal fork of [Yours Wallet](https://github.com/yours-org/yours-wallet)
+with two targeted hardening upgrades. Non-custodial BSV / 1Sat
+Ordinals / MNEE wallet. BRC-100 compatible.
 
-<a href="https://chromewebstore.google.com/detail/yours-wallet/mlbnicldlpdimbjdcncnklfempedeipj" target="_blank">🌱 Download Chrome Extension 🌱</a>
+## What's the same as upstream Yours Wallet
 
-# Yours Wallet | Non-Custodial Web3 SPV Wallet For BSV
+All cryptography, key management, seed format, BIP32 derivation paths,
+BRC-100 provider surface (`window.yours.*`), 1Sat Ordinals support,
+MNEE integration, multi-account, UI screens. See [LICENSE.md](LICENSE.md) —
+MIT, preserved from upstream; copyright for the base wallet remains
+with Daniel Wagner and David Case.
 
-Yours Wallet is an open-source and non-custodial web3 SPV wallet for Bitcoin SV (BSV) and [1Sat Ordinals](https://docs.1satordinals.com/). This wallet allows users to have full control over their funds, providing security and independence in managing their assets.
+## The two upgrades
 
-## Features
+### 1. Security — `axios` removed
 
-- 🔑 **Non-Custodial:** Your private keys are encrypted and stored locally on your device, ensuring complete control over your funds.
-- 🙌 **Multi-Account:** Use one wallet to manage all of your different accounts/keys.
-- 😎 **User-Friendly:** A user-friendly interface makes asset management a breeze.
-- ✅ **BSV Support:** Receive and Send BSV payments.
-- 🟡 **1Sat Ordinals:** Full support for sending and transferring 1Sat Ordinals.
-- 🔐 **Secure:** Open Source and audited by the community.
+All HTTP calls use the browser's native `fetch` API. No third-party
+HTTP library in the wallet's dependency tree. Mitigates the 2024
+`axios` supply-chain attack vector.
 
-## Development
+> This was also merged upstream via
+> [yours-org PR #300](https://github.com/yours-org/yours-wallet/pull/300),
+> so Anvil Wallet inherits this rather than being the originator.
 
-#### Wallet Provider API 🚀
+### 2. Redundancy — multi-source chain data
 
-Documentation on integrating Yours Wallet into your decentralized web3 application can be [found here](https://panda-wallet.gitbook.io/provider-api/).
+Yours Wallet (and forks of it) historically depended on a single pair
+of indexers (`ordinals.1sat.app` + `ordinals.gorillapool.io`). When
+those degrade, the wallet hangs. Anvil Wallet chains through
+redundant sources with fail-closed ordinal safety:
 
-You can also check out the live sample app: [View Sample App](https://panda-wallet-sample-app.vercel.app/)
+- **Fund UTXO lookup**: spv-store primary → WhatsOnChain fallback,
+  with a local 1Sat inscription-envelope filter so the fallback path
+  never spends an ordinal as fungible BSV
+- **Broadcast**: Anvil-Mesh → spv-store → WhatsOnChain
+- **Mesh health pre-flight**: skips Anvil-Mesh quickly when it
+  self-reports its broadcast upstream as down
 
-#### Contributing 🙌
+All three paths are opt-out by default — if you don't configure
+Anvil-Mesh, they fall through silently to spv-store, identical to
+upstream behavior.
 
-If you'd like to contribute to the development of Yours Wallet, check out [contributing](CONTRIBUTING.md).
+## Minor additions
 
-## Issues, Bugs, and Feature Requests
+- **Theme**: renamed from "Yours" to "Anvil" in the manifest + theme file
+- **GetSignaturesRequest timeout**: the sign popup no longer deadlocks
+  when the 1Sat indexer is degraded (6-second timeout + minimal
+  preview fallback)
+- **`sendMNEEWithData` provider extension**: lets a connected dApp
+  request a user-half-signed MNEE transfer with optional OP_RETURN
+  data, useful for AVOS-style oracle-attested swaps. Additive;
+  existing `sendMNEE` flow unchanged.
 
-[Create an issue](https://github.com/yours-org/yours-wallet/issues) and track the [Kanban Board](https://github.com/orgs/Panda-Wallet/projects/1)
+## Total delta from upstream
 
-## Support The Project
+**7 commits** above `yours-org/yours-wallet` HEAD `75b18b1`.
+~450 LOC real code diff across 19 files. The full patch catalog with
+design rationale lives in
+[`docs/WALLET_REFORK_PLAN.md`](https://github.com/BSVanon/DEX/blob/main/docs/WALLET_REFORK_PLAN.md)
+in the related Anvil-Swap DEX workspace.
 
-**BSV:** `1MtzWXQEYGp89bQ9U2nfrnuChFv37j6pV6`
+This is a wallet, not a DEX. All swap protocol logic lives in
+[anvil-swap](https://github.com/BSVanon/Anvil-Swap) — the wallet
+works with the Anvil-Swap DEX or any other BRC-100 dApp without
+knowing or caring what they do.
 
-## Contact Us
+## Install
 
-- [@yoursxbt on X](https://twitter.com/yoursxbt)
-- [Discord](https://discord.gg/qHs6hTkmsf)
+### Developer / unpacked
+
+```bash
+git clone https://github.com/BSVanon/Anvil-Wallet.git
+cd Anvil-Wallet
+npm install --legacy-peer-deps
+npm run build
+```
+
+Load unpacked extension from `./build/` in `chrome://extensions`
+(Developer mode on).
+
+### Chrome Web Store
+
+*Coming soon.*
+
+## Upstream sync
+
+To pull updates from `yours-org/yours-wallet` when upstream ships:
+
+```bash
+git fetch upstream
+git rebase upstream/main    # replays the 7 Anvil patches on top of new upstream
+```
+
+Or use the "Sync fork" button in the GitHub UI.
 
 ## License
 
-Yours Wallet is released under the [MIT License](https://opensource.org/licenses/MIT)
+[MIT](LICENSE.md). Copyright for the base wallet remains with Daniel
+Wagner and David Case. Anvil-specific additions are dedicated to the
+same MIT terms; see commit history for authorship.
+
+## Credits
+
+Forked from [yours-org/yours-wallet](https://github.com/yours-org/yours-wallet)
+at commit `75b18b1`.
+
+The pre-fork Anvil-Wallet (before this minimal re-fork, with
+DEX-specific code that has since been extracted into `anvil-swap`) is
+archived at
+[BSVanon/Anvil-Wallet-legacy-2026-04-17](https://github.com/BSVanon/Anvil-Wallet-legacy-2026-04-17).
