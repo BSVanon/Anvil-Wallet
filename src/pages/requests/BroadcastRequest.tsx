@@ -16,6 +16,7 @@ import { getTxFromRawTxFormat } from '../../utils/tools';
 import { IndexContext } from 'spv-store';
 import TxPreview from '../../components/TxPreview';
 import { styled } from 'styled-components';
+import { broadcastMultiSource } from '../../utils/broadcast';
 
 const Wrapper = styled(ConfirmContent)`
   max-height: calc(100vh - 8rem);
@@ -131,8 +132,12 @@ export const BroadcastRequest = (props: BroadcastRequestProps) => {
       }
       const tx = getTxFromRawTxFormat(rawtx, request.format || 'tx');
 
-      const resp = await oneSatSPV.broadcast(tx, 'provider');
-      if (resp.status === 'error') {
+      // Route dApp-initiated broadcasts through the same multi-source
+      // chain the wallet uses for its own sends (patch 6). Upstream
+      // called oneSatSPV.broadcast directly here, so a dApp call to
+      // provider.broadcast() ignored the Anvil-Mesh → WoC fallback.
+      const resp = await broadcastMultiSource(tx, { oneSatSPV });
+      if (resp.status === 'error' || !resp.txid) {
         addSnackbar('Error broadcasting the raw tx!', 'error');
         setIsProcessing(false);
         sendMessage({
