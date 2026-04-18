@@ -105,7 +105,7 @@ export let oneSatSPVPromise = chromeStorageService.getAndSetStorage().then(async
   return initOneSatSPV(chromeStorageService, isInServiceWorker);
 });
 
-console.log('Yours Wallet Background Script Running!');
+console.log('Anvil Wallet Background Script Running!');
 
 const WOC_BASE_URL = 'https://api.whatsonchain.com/v1/bsv';
 

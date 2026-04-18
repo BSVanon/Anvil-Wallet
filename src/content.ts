@@ -9,7 +9,7 @@ import {
   YoursEventName,
 } from './inject';
 
-console.log('🌱 Yours Wallet Loaded');
+console.log('🌱 Anvil Wallet Loaded');
 
 const script = document.createElement('script');
 script.src = chrome.runtime.getURL('inject.js');
