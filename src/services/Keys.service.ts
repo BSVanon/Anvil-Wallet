@@ -17,6 +17,7 @@ import { SupportedWalletImports, WifKeys } from './types/keys.types';
 import { P2PKH, PrivateKey, SatoshisPerKilobyte, Transaction, Utils } from '@bsv/sdk';
 import { SPVStore } from 'spv-store';
 import { WocUtxo } from './types/whatsOnChain.types';
+import { broadcastMultiSource } from '../utils/broadcast';
 
 export class KeysService {
   bsvAddress: string;
@@ -144,7 +145,7 @@ export class KeysService {
       }
       await tx.fee(feeModel);
       await tx.sign();
-      const response = await this.oneSatSPV.broadcast(tx);
+      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV });
       if (response.status == 'error') return { error: response.description };
       const txid = tx.id('hex');
       console.log('Change sweep:', txid);
@@ -193,7 +194,7 @@ export class KeysService {
       }
       await tx.fee(feeModel);
       await tx.sign();
-      const response = await this.oneSatSPV.broadcast(tx);
+      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV });
       if (response.status == 'error') return { error: response.description };
       const txid = tx.id('hex');
       console.log('Change sweep:', txid);

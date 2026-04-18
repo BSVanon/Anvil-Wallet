@@ -27,6 +27,7 @@ import { truncate } from '../utils/format';
 import { theme } from '../theme';
 import { GorillaPoolService } from './GorillaPool.service';
 import { Token } from './types/gorillaPool.types';
+import { broadcastMultiSource } from '../utils/broadcast';
 
 const client = new PaymailClient();
 
@@ -152,7 +153,7 @@ export class OrdinalService {
       await tx.fee(feeModel);
       await tx.sign();
 
-      const response = await this.oneSatSPV.broadcast(tx);
+      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV });
       if (response?.txid) {
         return { txid: response.txid };
       }
@@ -233,7 +234,7 @@ export class OrdinalService {
         changeAddress: keys.walletAddress,
       });
 
-      const response = await this.oneSatSPV.broadcast(tx);
+      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV });
       if (response?.txid) {
         return { txid: response.txid };
       }
@@ -310,7 +311,7 @@ export class OrdinalService {
         tokenChangeAddress: keys.ordAddress,
       });
 
-      const response = await this.oneSatSPV.broadcast(tx);
+      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV });
       if (response?.txid) {
         return { txid: response.txid, rawTx: tx.toHex() };
       }
@@ -372,7 +373,7 @@ export class OrdinalService {
         ],
       });
 
-      const response = await this.oneSatSPV.broadcast(tx);
+      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV });
       if (response?.txid) {
         return { txid: response.txid };
       }
@@ -431,7 +432,7 @@ export class OrdinalService {
         ],
       });
 
-      const response = await this.oneSatSPV.broadcast(tx);
+      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV });
       if (response?.txid) {
         return { txid: response.txid };
       }
@@ -544,7 +545,7 @@ export class OrdinalService {
         tx = res.tx;
       }
 
-      const response = await this.oneSatSPV.broadcast(tx);
+      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV });
       if (response?.txid) {
         return { txid: response.txid };
       }

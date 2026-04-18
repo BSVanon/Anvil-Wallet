@@ -31,6 +31,7 @@ import { theme } from '../theme';
 //@ts-ignore
 import { PaymailClient } from '@bsv/paymail/client';
 import { convertLockReqToSendBsvReq } from '../utils/tools';
+import { broadcastMultiSource } from '../utils/broadcast';
 
 const client = new PaymailClient();
 
@@ -148,7 +149,7 @@ export class BsvService {
       }
 
       await tx.sign();
-      const response = await this.oneSatSPV.broadcast(tx);
+      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV });
       console.log(`Transaction broadcast response: ${response}`);
       if (response.status == 'error') return { error: response.description };
       const txHex = tx.toHex();
@@ -286,7 +287,7 @@ export class BsvService {
 
       if (showPreview) return { rawtx: tx.toHex() };
 
-      const response = await this.oneSatSPV.broadcast(tx);
+      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV });
 
       const txHex = tx.toHex();
       const chromeObj = this.chromeStorageService.getCurrentAccountObject();

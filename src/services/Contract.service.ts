@@ -13,6 +13,7 @@ import {
 } from '@bsv/sdk';
 import { SPVStore, Txo } from 'spv-store';
 import { LockTemplate } from 'spv-store';
+import { broadcastMultiSource } from '../utils/broadcast';
 export class ContractService {
   constructor(
     private readonly keysService: KeysService,
@@ -147,7 +148,7 @@ export class ContractService {
 
       await tx.fee(new SatoshisPerKilobyte(FEE_PER_KB));
       await tx.sign();
-      const response = await this.oneSatSPV.broadcast(tx);
+      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV });
       if (response?.txid) {
         return { txid: response.txid };
       }
