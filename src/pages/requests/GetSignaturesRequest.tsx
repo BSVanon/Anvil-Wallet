@@ -87,8 +87,37 @@ export const GetSignaturesRequest = (props: GetSignaturesRequestProps) => {
       if (!request.rawtx || !oneSatSPV) return;
       setIsLoading(true);
       const tx = getTxFromRawTxFormat(request.rawtx, request.format || 'tx');
-      const parsedTx = await oneSatSPV.parseTx(tx);
-      setTxData(parsedTx);
+      // parseTx calls populateTx → fetchProof against the 1sat.app indexer
+      // for the tx itself, which hangs indefinitely when the indexer is
+      // degraded AND for any unbroadcast tx (no proof exists yet). Race
+      // against a short timeout so the sign popup never deadlocks: if
+      // parseTx hasn't returned in 6s, proceed with a minimal local
+      // preview built from tx.outputs/inputs directly. The user still
+      // sees the full tx details and can approve/reject.
+      const timeout = new Promise<'timeout'>((resolve) =>
+        setTimeout(() => resolve('timeout'), 6000),
+      );
+      const parsed = await Promise.race([oneSatSPV.parseTx(tx).catch(() => 'error' as const), timeout]);
+      if (parsed === 'timeout' || parsed === 'error') {
+        // Build a degraded-but-safe IndexContext from the tx alone. No
+        // ordinal metadata enrichment — caller is responsible for having
+        // vetted inputs before requesting the signature (the DEX does
+        // this via its own ordinal preflight before calling getSignatures).
+        const fallback: IndexContext = {
+          tx,
+          txid: tx.id('hex') as string,
+          spends: [],
+          txos: [],
+        } as unknown as IndexContext;
+        setTxData(fallback);
+        console.warn(
+          '[GetSignaturesRequest] oneSatSPV.parseTx ' +
+            (parsed === 'timeout' ? 'timed out after 6s' : 'errored') +
+            ' — rendering sign popup with minimal preview. SPV indexer degraded?',
+        );
+      } else {
+        setTxData(parsed);
+      }
       setIsLoading(false);
     })();
   }, [oneSatSPV, request]);
