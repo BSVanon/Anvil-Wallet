@@ -45,7 +45,7 @@ export const OrdPurchaseRequest = (props: OrdPurchaseRequestProps) => {
   const { gorillaPoolService, ordinalService, chromeStorageService } = useServiceContext();
   const [inscription, setInscription] = useState<OrdinalType | undefined>();
   const [isProcessing, setIsProcessing] = useState(false);
-  const [tokenDetails, setTokenDetails] = useState<Token>();
+  const [tokenDetails, setTokenDetails] = useState<Partial<Token>>();
   const [isLoaded, setIsLoaded] = useState(false);
   const marketplaceAddress = request.marketplaceAddress ?? YOURS_DEV_WALLET;
   const marketplaceRate = request.marketplaceRate ?? GLOBAL_ORDERBOOK_MARKET_RATE;
@@ -101,7 +101,7 @@ export const OrdPurchaseRequest = (props: OrdPurchaseRequestProps) => {
       outpoint,
       password: passwordConfirm,
     };
-    const purchaseRes = await ordinalService.purchaseGlobalOrderbookListing(purchaseListing, inscription, tokenDetails);
+    const purchaseRes = await ordinalService.purchaseGlobalOrderbookListing(purchaseListing, inscription, tokenDetails as Token | undefined);
 
     if (!purchaseRes.txid || purchaseRes.error) {
       addSnackbar(getErrorMessage(purchaseRes.error), 'error');

@@ -18,6 +18,7 @@ const initializeServices = async () => {
   const wocService = new WhatsOnChainService(chromeStorageService);
   const gorillaPoolService = new GorillaPoolService(chromeStorageService);
   const oneSatSPV = await oneSatSPVPromise;
+  gorillaPoolService.setLocalFallbackDeps(oneSatSPV, wocService);
   const keysService = new KeysService(chromeStorageService, oneSatSPV, wocService);
   const contractService = new ContractService(keysService, oneSatSPV, wocService);
   const mneeService = new mnee({ environment: 'production', apiKey: MNEE_API_TOKEN });

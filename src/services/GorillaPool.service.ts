@@ -2,10 +2,23 @@ import { Bsv20, BSV20Txo, NetWork, Ordinal } from 'yours-wallet-provider';
 import { GP_BASE_URL, GP_TESTNET_BASE_URL } from '../utils/constants';
 import { MarketResponse, Token } from './types/gorillaPool.types';
 import { ChromeStorageService } from './ChromeStorage.service';
+import type { SPVStore } from 'spv-store';
+import type { WhatsOnChainService } from './WhatsOnChain.service';
 import { isBSV20v2 } from '../utils/ordi';
+import { getBsv20DetailsLocal } from '../utils/bsv20Local';
 
 export class GorillaPoolService {
+  private oneSatSPV: SPVStore | null = null;
+  private wocService: WhatsOnChainService | null = null;
+
   constructor(private readonly chromeStorageService: ChromeStorageService) {}
+
+  // Wired post-construction to avoid a circular-dep in the service graph
+  // (GorillaPool is instantiated before oneSatSPV finishes initializing).
+  setLocalFallbackDeps = (oneSatSPV: SPVStore, wocService: WhatsOnChainService) => {
+    this.oneSatSPV = oneSatSPV;
+    this.wocService = wocService;
+  };
   getBaseUrl(network: NetWork) {
     return network === NetWork.Mainnet ? GP_BASE_URL : GP_TESTNET_BASE_URL;
   }
@@ -113,7 +126,7 @@ export class GorillaPoolService {
     }
   };
 
-  getBsv20Details = async (tick: string) => {
+  getBsv20Details = async (tick: string): Promise<Token | Partial<Token> | undefined> => {
     try {
       const network = this.chromeStorageService.getNetwork();
       const url = isBSV20v2(tick)
@@ -124,7 +137,17 @@ export class GorillaPoolService {
       if (!r.ok) throw new Error(`Failed to fetch BSV20 details: ${r.status}`);
       return await r.json() as Token;
     } catch (error) {
-      console.error('getBsv20Details', error);
+      console.warn('getBsv20Details indexer failed, trying local parse:', error);
+      // Local fallback: for BSV-21 (v2) tokens, parse the deploy tx's
+      // inscription envelope directly. Gives us the static fields
+      // (sym, dec, icon, amt/max/supply) without the indexer. Dynamic
+      // fields (pctMinted, holders, available) are omitted on this
+      // path — callers must treat the returned Token as partial.
+      if (this.oneSatSPV && this.wocService) {
+        const local = await getBsv20DetailsLocal(this.oneSatSPV, this.wocService, tick);
+        if (local) return local;
+      }
+      return undefined;
     }
   };
 }

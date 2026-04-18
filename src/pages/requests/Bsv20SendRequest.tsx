@@ -40,7 +40,7 @@ export const Bsv20SendRequest = (props: Bsv20SendRequestProps) => {
   const { ordinalService, chromeStorageService, gorillaPoolService } = useServiceContext();
   const { sendBSV20 } = ordinalService;
   const [isProcessing, setIsProcessing] = useState(false);
-  const [token, setToken] = useState<Token>();
+  const [token, setToken] = useState<Partial<Token>>();
   const isPasswordRequired = chromeStorageService.isPasswordRequired();
   const tokenIcon =
     (token?.icon && `${gorillaPoolService.getBaseUrl(chromeStorageService.getNetwork())}/content/${token.icon}`) ||
@@ -81,7 +81,7 @@ export const Bsv20SendRequest = (props: Bsv20SendRequestProps) => {
         return;
       }
 
-      const amtString = normalize(String(request.amount), token.dec);
+      const amtString = normalize(String(request.amount), token.dec ?? 0);
       const sendRes = await sendBSV20(request.idOrTick, request.address, BigInt(amtString), passwordConfirm);
       if (!sendRes.txid || sendRes.error) {
         addSnackbar(getErrorMessage(sendRes.error), 'error');
