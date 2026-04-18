@@ -40,7 +40,9 @@ import { GetSignaturesResponse } from './pages/requests/GetSignaturesRequest';
 import { ChromeStorageObject, ConnectRequest } from './services/types/chromeStorage.types';
 import { ChromeStorageService } from './services/ChromeStorage.service';
 import { GorillaPoolService } from './services/GorillaPool.service';
+import { WhatsOnChainService } from './services/WhatsOnChain.service';
 import { mapOrdinal } from './utils/providerHelper';
+import { Utils as SdkUtils } from '@bsv/sdk';
 import { TxoLookup, TxoSort } from 'spv-store';
 import { initOneSatSPV } from './initSPVStore';
 import { CHROME_STORAGE_OBJECT_VERSION, HOSTED_YOURS_IMAGE, MNEE_API_TOKEN } from './utils/constants';
@@ -54,6 +56,27 @@ const mnee = new Mnee({ environment: 'production', apiKey: MNEE_API_TOKEN });
 let chromeStorageService = new ChromeStorageService();
 const isInServiceWorker = self?.document === undefined;
 const gorillaPoolService = new GorillaPoolService(chromeStorageService);
+const wocService = new WhatsOnChainService(chromeStorageService);
+
+/**
+ * Same 1Sat inscription-envelope byte pattern Bsv.service uses for the
+ * patch-5 fallback: OP_FALSE (0x00) + OP_IF (0x63) + push-3 + 'ord'.
+ * Any output whose locking script contains this sequence is inscribed
+ * and must NOT be returned as a fund UTXO.
+ */
+const hasInscriptionEnvelope = (scriptBytes: number[]): boolean => {
+  for (let i = 0; i < scriptBytes.length - 5; i++) {
+    if (
+      scriptBytes[i] === 0x00 &&
+      scriptBytes[i + 1] === 0x63 &&
+      scriptBytes[i + 2] === 0x03 &&
+      scriptBytes[i + 3] === 0x6f &&
+      scriptBytes[i + 4] === 0x72 &&
+      scriptBytes[i + 5] === 0x64
+    ) return true;
+  }
+  return false;
+};
 
 export let oneSatSPVPromise = chromeStorageService.getAndSetStorage().then(async (storage) => {
   const version = storage?.version;
@@ -650,33 +673,66 @@ if (isInServiceWorker) {
     }
   };
 
+  /**
+   * Provider-facing fund UTXO listing. Mirrors BsvService.fundingTxos (patch 5):
+   * spv-store primary with an 8s timeout, then WhatsOnChain fallback with the
+   * 1Sat inscription-envelope filter so the fallback path never exposes an
+   * ordinal as a fund UTXO. Upstream's handler only hit spv-store and
+   * returned empty whenever 1sat.app was degraded — dApps calling
+   * `provider.getPaymentUtxos()` saw zero UTXOs and couldn't compose
+   * transactions. Patch 11 closes that hole for the provider surface.
+   */
   const processGetPaymentUtxos = (sendResponse: CallbackResponse) => {
-    try {
-      chromeStorageService.getAndSetStorage().then(async () => {
+    const PRIMARY_TIMEOUT_MS = 8000;
+    chromeStorageService
+      .getAndSetStorage()
+      .then(async () => {
         const oneSatSPV = await oneSatSPVPromise;
         if (!oneSatSPV) throw Error('SPV not initialized!');
-        const results = await oneSatSPV.search(new TxoLookup('fund'), undefined, 0);
-        const utxos = results.txos.map((txo) => {
-          return {
-            txid: txo.outpoint.txid,
-            vout: txo.outpoint.vout,
-            satoshis: Number(txo.satoshis),
-            script: Buffer.from(txo.script).toString('hex'),
-          };
-        });
+
+        // 1) spv-store primary (ordinal-aware via basket segregation).
+        try {
+          const primary = await Promise.race([
+            oneSatSPV.search(new TxoLookup('fund'), TxoSort.ASC, 0),
+            new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), PRIMARY_TIMEOUT_MS)),
+          ]);
+          if (primary !== 'timeout') {
+            const utxos = primary.txos.map((txo) => ({
+              txid: txo.outpoint.txid,
+              vout: txo.outpoint.vout,
+              satoshis: Number(txo.satoshis),
+              script: Buffer.from(txo.script).toString('hex'),
+            }));
+            sendResponse({ type: YoursEventName.GET_PAYMENT_UTXOS, success: true, data: utxos });
+            return;
+          }
+          console.warn(`[getPaymentUtxos] spv-store primary timed out after ${PRIMARY_TIMEOUT_MS}ms — falling back to WoC`);
+        } catch (err) {
+          console.warn('[getPaymentUtxos] spv-store primary threw — falling back to WoC:', (err as Error).message);
+        }
+
+        // 2) WoC fallback with inscription-envelope filter (fail-closed).
+        const acct = chromeStorageService.getCurrentAccountObject();
+        const bsvAddress = acct?.account?.addresses?.bsvAddress;
+        if (!bsvAddress) throw new Error('no bsvAddress in current account');
+        const wocUtxos = await wocService.getUtxosByAddress(bsvAddress);
+        const filtered = wocUtxos
+          .filter((u) => !hasInscriptionEnvelope(SdkUtils.toArray(u.scriptHex, 'hex') as number[]))
+          .map((u) => ({
+            txid: u.txid,
+            vout: u.vout,
+            satoshis: u.satoshis,
+            script: u.scriptHex,
+          }));
+        sendResponse({ type: YoursEventName.GET_PAYMENT_UTXOS, success: true, data: filtered });
+      })
+      .catch((error) => {
         sendResponse({
           type: YoursEventName.GET_PAYMENT_UTXOS,
-          success: true,
-          data: utxos,
+          success: false,
+          error: (error as Error).message || JSON.stringify(error),
         });
       });
-    } catch (error) {
-      sendResponse({
-        type: YoursEventName.GET_PAYMENT_UTXOS,
-        success: false,
-        error: JSON.stringify(error),
-      });
-    }
   };
 
   // Important note: We process the InscribeRequest as a SendBsv request.
