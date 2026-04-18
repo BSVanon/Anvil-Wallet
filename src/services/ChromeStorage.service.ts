@@ -9,6 +9,7 @@ import {
   CHROME_STORAGE_OBJECT_VERSION,
   FEE_PER_KB,
   HOSTED_YOURS_IMAGE,
+  LEGACY_HOSTED_YOURS_IMAGE,
   MAINNET_ADDRESS_PREFIX,
   TESTNET_ADDRESS_PREFIX,
 } from '../utils/constants';
@@ -230,7 +231,52 @@ export class ChromeStorageService {
       this.storage = await this.mapDeprecatedStorageToNewInterface(this.storage as DeprecatedStorage);
     }
 
+    // One-time migration: accounts created while HOSTED_YOURS_IMAGE still
+    // pointed at the upstream Yours leaf URL have that URL baked into
+    // their stored `icon` / `socialProfile.avatar`. Rewrite any such
+    // legacy values to the current Anvil default. Idempotent — callers
+    // hitting this a second time see no changes because the legacy URL
+    // is already gone.
+    await this.migrateLegacyAvatarUrls();
+
     return this.storage;
+  };
+
+  /**
+   * Rewrite any account whose stored avatar/icon is the upstream
+   * Yours-org default URL to the current Anvil HOSTED_YOURS_IMAGE.
+   * Runs on every `getAndSetStorage`; is idempotent + safe; writes
+   * back only if something actually changed.
+   */
+  private migrateLegacyAvatarUrls = async (): Promise<void> => {
+    const accounts = this.storage?.accounts;
+    if (!accounts) return;
+    let changed = false;
+    const updatedAccounts: ChromeStorageObject['accounts'] = { ...accounts };
+    for (const [key, account] of Object.entries(accounts)) {
+      const migrated: Account = { ...account };
+      if (migrated.icon === LEGACY_HOSTED_YOURS_IMAGE) {
+        migrated.icon = HOSTED_YOURS_IMAGE;
+        changed = true;
+      }
+      const avatar = migrated.settings?.socialProfile?.avatar;
+      if (avatar === LEGACY_HOSTED_YOURS_IMAGE) {
+        migrated.settings = {
+          ...migrated.settings,
+          socialProfile: {
+            ...migrated.settings.socialProfile,
+            avatar: HOSTED_YOURS_IMAGE,
+          },
+        };
+        changed = true;
+      }
+      updatedAccounts[key] = migrated;
+    }
+    if (changed) {
+      await this.set({ accounts: updatedAccounts });
+      this.storage = { ...this.storage, accounts: updatedAccounts };
+      console.log('[ChromeStorage] migrated legacy Yours avatar URL → Anvil default');
+    }
   };
 
   updateNested = async <K extends keyof ChromeStorageObject>(

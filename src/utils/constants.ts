@@ -23,13 +23,22 @@ export const DUST = 10;
 export const INACTIVITY_LIMIT = 10 * 60 * 1000; // 10 minutes
 export const SNACKBAR_TIMEOUT = 3 * 1000; // 2.5 seconds
 // Default avatar + notification icon. Upstream pointed at
-// https://i.ibb.co/zGcthBv/yours-org-light.png (a hosted copy of the
-// yours-org logo) — swapped to the extension-bundled Anvil icon so
-// accounts without a social-profile avatar + Chrome notifications
-// display the Anvil logo instead of the Yours logo.
+// LEGACY_HOSTED_YOURS_IMAGE (a hosted copy of the yours-org logo) —
+// swapped to the extension-bundled Anvil icon so accounts without a
+// social-profile avatar + Chrome notifications display the Anvil logo
+// instead of the Yours logo.
 // Extension-relative path; resolves against chrome-extension://<id>/
 // in both <img> render contexts and Chrome notifications iconUrl.
 export const HOSTED_YOURS_IMAGE = 'icons/icon128.png';
+
+/**
+ * The upstream Yours-org default-avatar URL. Kept as a constant so
+ * ChromeStorageService can detect accounts that were created (or
+ * restored) while HOSTED_YOURS_IMAGE still pointed here and migrate
+ * their stored icon / socialProfile.avatar to the new Anvil default.
+ * See ChromeStorageService.getAndSetStorage.
+ */
+export const LEGACY_HOSTED_YOURS_IMAGE = 'https://i.ibb.co/zGcthBv/yours-org-light.png';
 export const YOURS_DEV_WALLET = '1MtzWXQEYGp89bQ9U2nfrnuChFv37j6pV6';
 export const PROVIDER_DOCS_URL = 'https://yours-wallet.gitbook.io/provider-api/intro/introduction';
 export const ONE_SAT_MARKET_URL = 'https://1sat.market/market';
