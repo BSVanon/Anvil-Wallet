@@ -1,12 +1,12 @@
 {
   "version": "4.5.6",
   "manifest_version": 3,
-  "name": "Yours Wallet",
-  "description": "A non-custodial and open-source wallet for BSV and 1Sat Ordinals",
+  "name": "Anvil Wallet",
+  "description": "Non-custodial BSV / 1Sat Ordinals / MNEE wallet. BRC-100 compatible. Minimal-delta fork of Yours Wallet with hardened chain-data redundancy.",
   "permissions": ["storage", "unlimitedStorage", "tabs", "notifications"],
   "action": {
     "default_popup": "index.html",
-    "default_title": "Yours Wallet"
+    "default_title": "Anvil Wallet"
   },
   "background": {
     "service_worker": "background.js",

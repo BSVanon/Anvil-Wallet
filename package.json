@@ -1,5 +1,5 @@
 {
-  "name": "yours-wallet",
+  "name": "anvil-wallet",
   "version": "4.5.6",
   "private": true,
   "dependencies": {
