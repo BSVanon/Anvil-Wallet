@@ -1,7 +1,7 @@
 {
-  "short_name": "Yours",
-  "name": "Yours Wallet",
-  "description": "A non-custodial and open-source wallet for BSV and 1Sat Ordinals",
+  "short_name": "Anvil",
+  "name": "Anvil Wallet",
+  "description": "Non-custodial BSV / 1Sat Ordinals / MNEE wallet. BRC-100 compatible.",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#000000",
