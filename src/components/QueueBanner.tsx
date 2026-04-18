@@ -42,6 +42,24 @@ export const QueueBanner = () => {
     }, 1000);
   }, []);
 
+  // Safety timeout: useQueueTracker's isSyncing starts `true` and only
+  // flips to `false` when a QUEUE_STATUS_UPDATE with queueLength === 0
+  // arrives. For an already-caught-up wallet (e.g. re-restore), spv-store
+  // has nothing to sync and emits no queue events, so isSyncing stays
+  // stuck at true and the banner never clears. Upstream bug that shows
+  // up when a seed is restored into a wallet that then has no new txs
+  // to download. Clear the flag after 20 s of no activity — if real
+  // syncing is happening, queue events will have fired long before.
+  useEffect(() => {
+    if (!isInitializing) return;
+    const timeout = setTimeout(() => {
+      console.log('[QueueBanner] init safety timeout reached — clearing banner');
+      localStorage.removeItem('walletImporting');
+      setIsInitializing(false);
+    }, 20_000);
+    return () => clearTimeout(timeout);
+  }, [isInitializing]);
+
   useEffect(() => {
     if (queueLength || (importName && importName !== 'Wallet')) {
       localStorage.removeItem('walletImporting');
