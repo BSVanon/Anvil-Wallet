@@ -46,6 +46,7 @@ import { initOneSatSPV } from './initSPVStore';
 import { CHROME_STORAGE_OBJECT_VERSION, HOSTED_YOURS_IMAGE, MNEE_API_TOKEN } from './utils/constants';
 import { convertLockReqToSendBsvReq } from './utils/tools';
 import Mnee from '@mnee/ts-sdk';
+import type { SendMNEEWithData, SendMNEEWithDataResponse } from './services/types/mnee.types';
 
 // mnee instance for balance check
 const mnee = new Mnee({ environment: 'production', apiKey: MNEE_API_TOKEN });
@@ -91,6 +92,7 @@ let responseCallbackForConnectRequest: CallbackResponse | null = null;
 let responseCallbackForSendBsvRequest: CallbackResponse | null = null;
 let responseCallbackForSendBsv20Request: CallbackResponse | null = null;
 let responseCallbackForSendMNEERequest: CallbackResponse | null = null;
+let responseCallbackForSendMNEEWithDataRequest: CallbackResponse | null = null;
 let responseCallbackForTransferOrdinalRequest: CallbackResponse | null = null;
 let responseCallbackForPurchaseOrdinalRequest: CallbackResponse | null = null;
 let responseCallbackForSignMessageRequest: CallbackResponse | null = null;
@@ -205,6 +207,7 @@ if (isInServiceWorker) {
       YoursEventName.SEND_BSV_RESPONSE,
       YoursEventName.SEND_BSV20_RESPONSE,
       YoursEventName.SEND_MNEE_RESPONSE,
+      YoursEventName.SEND_MNEE_WITH_DATA_RESPONSE,
       YoursEventName.TRANSFER_ORDINAL_RESPONSE,
       YoursEventName.PURCHASE_ORDINAL_RESPONSE,
       YoursEventName.SIGN_MESSAGE_RESPONSE,
@@ -230,6 +233,8 @@ if (isInServiceWorker) {
           return processSendBsv20Response(message as SendBsv20Response);
         case YoursEventName.SEND_MNEE_RESPONSE:
           return processSendMNEEResponse(message as SendMNEEResponse);
+        case YoursEventName.SEND_MNEE_WITH_DATA_RESPONSE:
+          return processSendMNEEWithDataResponse(message as SendMNEEWithDataResponse);
         case YoursEventName.TRANSFER_ORDINAL_RESPONSE:
           return processTransferOrdinalResponse(message as { txid: string });
         case YoursEventName.PURCHASE_ORDINAL_RESPONSE:
@@ -298,6 +303,8 @@ if (isInServiceWorker) {
           return processSendBsv20Request(message, sendResponse);
         case YoursEventName.SEND_MNEE:
           return processSendMNEERequest(message, sendResponse);
+        case YoursEventName.SEND_MNEE_WITH_DATA:
+          return processSendMNEEWithDataRequest(message, sendResponse);
         case YoursEventName.TRANSFER_ORDINAL:
           return processTransferOrdinalRequest(message, sendResponse);
         case YoursEventName.PURCHASE_ORDINAL:
@@ -771,6 +778,33 @@ if (isInServiceWorker) {
     }
   };
 
+  const processSendMNEEWithDataRequest = (
+    message: { params: { data: SendMNEEWithData } },
+    sendResponse: CallbackResponse,
+  ) => {
+    if (!message.params.data) {
+      sendResponse({
+        type: YoursEventName.SEND_MNEE_WITH_DATA,
+        success: false,
+        error: 'Must provide valid params!',
+      });
+      return;
+    }
+    try {
+      responseCallbackForSendMNEEWithDataRequest = sendResponse;
+      const sendMNEEWithDataRequest = message.params.data;
+      chromeStorageService.update({ sendMNEEWithDataRequest }).then(() => {
+        launchPopUp();
+      });
+    } catch (error) {
+      sendResponse({
+        type: YoursEventName.SEND_MNEE_WITH_DATA,
+        success: false,
+        error: JSON.stringify(error),
+      });
+    }
+  };
+
   const processTransferOrdinalRequest = (message: { params: TransferOrdinal }, sendResponse: CallbackResponse) => {
     if (!message.params) {
       sendResponse({
@@ -1178,6 +1212,39 @@ if (isInServiceWorker) {
     return true;
   };
 
+  const processSendMNEEWithDataResponse = (response: SendMNEEWithDataResponse) => {
+    if (!responseCallbackForSendMNEEWithDataRequest) throw Error('Missing callback!');
+    try {
+      if (response.error) {
+        responseCallbackForSendMNEEWithDataRequest({
+          type: YoursEventName.SEND_MNEE_WITH_DATA,
+          success: false,
+          error: response.error,
+        });
+      } else {
+        responseCallbackForSendMNEEWithDataRequest({
+          type: YoursEventName.SEND_MNEE_WITH_DATA,
+          success: true,
+          data: {
+            rawtx: response.rawtx,
+            ticketId: response.ticketId,
+            localTxid: response.localTxid,
+          },
+        });
+      }
+    } catch (error) {
+      responseCallbackForSendMNEEWithDataRequest?.({
+        type: YoursEventName.SEND_MNEE_WITH_DATA,
+        success: false,
+        error: JSON.stringify(error),
+      });
+    } finally {
+      cleanup([YoursEventName.SEND_MNEE_WITH_DATA]);
+    }
+
+    return true;
+  };
+
   const processTransferOrdinalResponse = (response: { txid: string }) => {
     if (!responseCallbackForTransferOrdinalRequest) throw Error('Missing callback!');
     try {
@@ -1409,6 +1476,16 @@ if (isInServiceWorker) {
         });
         responseCallbackForSendBsvRequest = null;
         chromeStorageService.remove('sendMNEERequest');
+      }
+
+      if (responseCallbackForSendMNEEWithDataRequest) {
+        responseCallbackForSendMNEEWithDataRequest({
+          type: YoursEventName.SEND_MNEE_WITH_DATA,
+          success: false,
+          error: 'User dismissed the request!',
+        });
+        responseCallbackForSendMNEEWithDataRequest = null;
+        chromeStorageService.remove('sendMNEEWithDataRequest');
       }
 
       if (responseCallbackForSignMessageRequest) {

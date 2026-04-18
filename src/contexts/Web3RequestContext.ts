@@ -14,12 +14,14 @@ import {
 } from 'yours-wallet-provider';
 import { RequestParams } from '../inject';
 import { ChromeStorageService } from '../services/ChromeStorage.service';
+import type { SendMNEEWithData } from '../services/types/mnee.types';
 
 export type Web3RequestContextProps = {
   connectRequest: RequestParams | undefined;
   sendBsvRequest: SendBsv[] | undefined;
   sendBsv20Request: SendBsv20 | undefined;
   sendMNEERequest: SendMNEE[] | undefined;
+  sendMNEEWithDataRequest: SendMNEEWithData | undefined;
   transferOrdinalRequest: TransferOrdinal | undefined;
   purchaseOrdinalRequest: PurchaseOrdinal | undefined;
   signMessageRequest: SignMessage | undefined;

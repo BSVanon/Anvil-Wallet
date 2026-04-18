@@ -12,6 +12,7 @@ import {
   TaggedDerivationRequest,
   TransferOrdinal,
 } from 'yours-wallet-provider';
+import type { SendMNEEWithData } from '../../services/types/mnee.types';
 import { RequestParams } from '../../inject';
 import { ChromeStorageService } from '../../services/ChromeStorage.service';
 import { ChromeStorageObject } from '../../services/types/chromeStorage.types';
@@ -23,6 +24,7 @@ export const Web3RequestProvider: React.FC<{ children: ReactNode }> = ({ childre
   const [sendBsvRequest, setSendBsvRequest] = useState<SendBsv[] | undefined>(undefined);
   const [sendBsv20Request, setSendBsv20Request] = useState<SendBsv20 | undefined>(undefined);
   const [sendMNEERequest, setSendMNEERequest] = useState<SendMNEE[] | undefined>(undefined);
+  const [sendMNEEWithDataRequest, setSendMNEEWithDataRequest] = useState<SendMNEEWithData | undefined>(undefined);
   const [transferOrdinalRequest, setTransferOrdinalRequest] = useState<TransferOrdinal | undefined>(undefined);
   const [purchaseOrdinalRequest, setPurchaseOrdinalRequest] = useState<PurchaseOrdinal | undefined>(undefined);
   const [signMessageRequest, setSignMessageRequest] = useState<SignMessage | undefined>(undefined);
@@ -49,6 +51,9 @@ export const Web3RequestProvider: React.FC<{ children: ReactNode }> = ({ childre
         break;
       case 'sendMNEERequest':
         setSendMNEERequest(undefined);
+        break;
+      case 'sendMNEEWithDataRequest':
+        setSendMNEEWithDataRequest(undefined);
         break;
       case 'transferOrdinalRequest':
         setTransferOrdinalRequest(undefined);
@@ -92,6 +97,7 @@ export const Web3RequestProvider: React.FC<{ children: ReactNode }> = ({ childre
       sendBsvRequest,
       sendBsv20Request,
       sendMNEERequest,
+      sendMNEEWithDataRequest,
       transferOrdinalRequest,
       purchaseOrdinalRequest,
       signMessageRequest,
@@ -107,6 +113,7 @@ export const Web3RequestProvider: React.FC<{ children: ReactNode }> = ({ childre
     if (sendBsvRequest) setSendBsvRequest(sendBsvRequest);
     if (sendBsv20Request) setSendBsv20Request(sendBsv20Request);
     if (sendMNEERequest) setSendMNEERequest(sendMNEERequest);
+    if (sendMNEEWithDataRequest) setSendMNEEWithDataRequest(sendMNEEWithDataRequest);
     if (transferOrdinalRequest) setTransferOrdinalRequest(transferOrdinalRequest);
     if (purchaseOrdinalRequest) setPurchaseOrdinalRequest(purchaseOrdinalRequest);
     if (signMessageRequest) setSignMessageRequest(signMessageRequest);
@@ -130,6 +137,7 @@ export const Web3RequestProvider: React.FC<{ children: ReactNode }> = ({ childre
         sendBsvRequest,
         sendBsv20Request,
         sendMNEERequest,
+        sendMNEEWithDataRequest,
         transferOrdinalRequest,
         purchaseOrdinalRequest,
         signMessageRequest,

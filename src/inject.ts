@@ -34,6 +34,10 @@ import {
   MNEEBalance,
   LockRequest,
 } from 'yours-wallet-provider';
+// Local-only provider extension (not in yours-wallet-provider upstream).
+// Wallet emits/handles these in addition to the upstream surface. Primary
+// consumer: AVOS DEX web app calling `window.yours.sendMNEEWithData(...)`.
+import type { SendMNEEWithData, SendMNEEWithDataResponse } from './services/types/mnee.types';
 
 export enum YoursEventName {
   CONNECT = 'connectRequest',
@@ -49,6 +53,7 @@ export enum YoursEventName {
   SEND_BSV = 'sendBsvRequest',
   SEND_BSV20 = 'sendBsv20Request',
   SEND_MNEE = 'sendMNEERequest',
+  SEND_MNEE_WITH_DATA = 'sendMNEEWithDataRequest',
   TRANSFER_ORDINAL = 'transferOrdinalRequest',
   SIGN_MESSAGE = 'signMessageRequest',
   BROADCAST = 'broadcastRequest',
@@ -69,6 +74,7 @@ export enum YoursEventName {
   SEND_BSV_RESPONSE = 'sendBsvResponse',
   SEND_BSV20_RESPONSE = 'sendBsv20Response',
   SEND_MNEE_RESPONSE = 'sendMNEEResponse',
+  SEND_MNEE_WITH_DATA_RESPONSE = 'sendMNEEWithDataResponse',
   TRANSFER_ORDINAL_RESPONSE = 'transferOrdinalResponse',
   PURCHASE_ORDINAL_RESPONSE = 'purchaseOrdinalResponse',
   SIGN_MESSAGE_RESPONSE = 'signMessageResponse',
@@ -136,6 +142,7 @@ export type ResponseEventDetail = {
     | SendBsvResponse
     | SendBsv20Response
     | SendMNEEResponse
+    | SendMNEEWithDataResponse
     | PubKeys
     | Addresses
     | NetWork
@@ -251,8 +258,11 @@ const createYoursEventEmitter = () => {
 
 const { on, removeListener, emit } = createYoursEventEmitter();
 
-//@ts-ignore TODO: remove this once MNEE is released.
-const provider: YoursProviderType = {
+// The cast-through-unknown is necessary because we add wallet-specific
+// extensions (sendMNEEWithData) that aren't in upstream yours-wallet-provider's
+// YoursProviderType. Structurally safe — the method signature matches the
+// provider call pattern, just isn't in the upstream declaration.
+const provider = {
   isReady: true,
   on,
   removeListener,
@@ -271,6 +281,9 @@ const provider: YoursProviderType = {
   sendBsv: createYoursMethod<SendBsvResponse | undefined, SendBsv[]>(YoursEventName.SEND_BSV),
   sendBsv20: createYoursMethod<SendBsv20Response | undefined, SendBsv20>(YoursEventName.SEND_BSV20),
   sendMNEE: createYoursMethod<SendMNEEResponse | undefined, SendMNEE[]>(YoursEventName.SEND_MNEE),
+  sendMNEEWithData: createYoursMethod<SendMNEEWithDataResponse | undefined, SendMNEEWithData>(
+    YoursEventName.SEND_MNEE_WITH_DATA,
+  ),
   transferOrdinal: createYoursMethod<string | undefined, TransferOrdinal>(YoursEventName.TRANSFER_ORDINAL),
   signMessage: createYoursMethod<SignedMessage | undefined, SignMessage>(YoursEventName.SIGN_MESSAGE),
   broadcast: createYoursMethod<string | undefined, Broadcast>(YoursEventName.BROADCAST),
@@ -290,7 +303,7 @@ const provider: YoursProviderType = {
   lockBsv: createYoursMethod<SendBsvResponse | undefined, LockRequest[]>(YoursEventName.LOCK_BSV),
   encrypt: createYoursMethod<string[] | undefined, EncryptRequest>(YoursEventName.ENCRYPT),
   decrypt: createYoursMethod<string[] | undefined, DecryptRequest>(YoursEventName.DECRYPT),
-};
+} as unknown as YoursProviderType;
 
 if (typeof window !== 'undefined') {
   window.panda = provider;

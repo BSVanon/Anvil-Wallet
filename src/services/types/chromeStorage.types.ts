@@ -22,6 +22,7 @@ import {
 import { WhitelistedApp } from '../../inject';
 import { Theme } from '../../theme.types';
 import { StoredUtxo } from './bsv.types';
+import type { SendMNEEWithData } from './mnee.types';
 
 export type Dispatch<T> = (value: T) => void;
 
@@ -76,6 +77,7 @@ export interface ChromeStorageObject {
   sendBsvRequest?: SendBsv[];
   sendBsv20Request?: SendBsv20;
   sendMNEERequest?: SendMNEE[];
+  sendMNEEWithDataRequest?: SendMNEEWithData;
   transferOrdinalRequest?: TransferOrdinal;
   purchaseOrdinalRequest?: PurchaseOrdinal;
   signMessageRequest?: SignMessage;
@@ -94,6 +96,7 @@ export type CurrentAccountObject = Omit<
   | 'sendBsvRequest'
   | 'sendBsv20Request'
   | 'sendMNEERequest'
+  | 'sendMNEEWithDataRequest'
   | 'transferOrdinalRequest'
   | 'purchaseOrdinalRequest'
   | 'signMessageRequest'
