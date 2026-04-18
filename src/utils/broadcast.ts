@@ -24,6 +24,7 @@
 
 import type { Transaction } from '@bsv/sdk';
 import type { SPVStore } from 'spv-store';
+import { getMeshBroadcastHealth } from './meshHealth';
 
 export interface BroadcastResult {
   status: 'success' | 'error';
@@ -42,6 +43,14 @@ async function broadcastViaMesh(tx: Transaction): Promise<BroadcastResult | null
   const nodeUrl = (typeof localStorage !== 'undefined' && localStorage.getItem('anvil_node_url')) || '';
   const authToken = (typeof localStorage !== 'undefined' && localStorage.getItem('anvil_auth_token')) || '';
   if (!nodeUrl || !authToken) return null; // not configured → skip silently
+
+  // Pre-flight health check: if the Mesh node reports its own broadcast
+  // upstream as "down", skip this path rather than waste a ~5s round-trip
+  // on a known-bad node. 30s cache means this is cheap per-broadcast.
+  const health = await getMeshBroadcastHealth();
+  if (health === 'down') {
+    return { status: 'error', description: 'anvil-mesh self-reports broadcast upstream down' };
+  }
   try {
     // Anvil-Mesh /broadcast takes raw BEEF bytes as application/octet-stream.
     // tx.toBEEF() yields a number[] that we send as binary.
