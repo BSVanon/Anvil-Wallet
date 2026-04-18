@@ -107,4 +107,46 @@ export class WhatsOnChainService {
       console.log(error);
     }
   };
+
+  /**
+   * Fallback UTXO-by-address query. Used when the primary spv-store index
+   * is unreachable / degraded. Returns raw WoC unspent outputs enriched
+   * with the per-output locking-script hex (fetched from the source tx).
+   *
+   * Callers that need ordinal-safe filtering must apply an inscription-
+   * envelope check on each scriptHex before treating the output as
+   * fungible (see isLikelyInscription in Bsv.service). WoC does NOT tag
+   * ordinal status — callers are responsible for fail-closed handling.
+   */
+  getUtxosByAddress = async (
+    address: string,
+  ): Promise<Array<{ txid: string; vout: number; satoshis: number; scriptHex: string }>> => {
+    const network = this.chromeStorageService.getNetwork();
+    const unspentRes = await fetch(`${this.getBaseUrl(network)}/address/${address}/unspent`, {
+      headers: this.config.headers,
+    });
+    if (!unspentRes.ok) throw new Error(`WoC unspent ${address}: ${unspentRes.status}`);
+    const unspent = (await unspentRes.json()) as Array<{ tx_hash: string; tx_pos: number; value: number }>;
+    const out: Array<{ txid: string; vout: number; satoshis: number; scriptHex: string }> = [];
+    for (const u of unspent) {
+      // Fetch raw hex so we can extract the locking script bytes for
+      // inscription-envelope inspection. Caching happens at the browser /
+      // spv-store layer on successful paths; this is the fallback so a
+      // per-item fetch is acceptable.
+      const hexRes = await fetch(`${this.getBaseUrl(network)}/tx/${u.tx_hash}/hex`, { headers: this.config.headers });
+      if (!hexRes.ok) throw new Error(`WoC tx hex ${u.tx_hash}: ${hexRes.status}`);
+      const rawHex = (await hexRes.text()).trim();
+      // Lightweight script extraction: parse the tx and grab the vout's locking script.
+      const tx = (await import('@bsv/sdk')).Transaction.fromHex(rawHex);
+      const output = tx.outputs[u.tx_pos];
+      if (!output) continue;
+      out.push({
+        txid: u.tx_hash,
+        vout: u.tx_pos,
+        satoshis: u.value,
+        scriptHex: (output.lockingScript as unknown as { toHex: () => string }).toHex(),
+      });
+    }
+    return out;
+  };
 }
