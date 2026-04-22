@@ -126,12 +126,7 @@ const registerEventListeners = async (oneSatSPV: OneSatWebSPV, selectedAccount: 
 
   oneSatSPV.events.on('importing', (data: { tag: string; name: string }) => {
     const message: ImportTrackerMessage = { action: YoursEventName.IMPORT_STATUS_UPDATE, data };
-    // Store the most-recent import timestamp so QueueBanner can tell a
-    // stale flag (reopen after sync completed) from a genuinely-active
-    // one. Upstream used 'true' which never expired and caused the
-    // "Sync Process Initializing..." banner to stick across every
-    // popup open.
-    message.data.tag === 'wallet' && localStorage.setItem('walletImporting', Date.now().toString());
+    message.data.tag === 'wallet' && localStorage.setItem('walletImporting', 'true');
     try {
       sendMessage(message);
       // eslint-disable-next-line no-empty

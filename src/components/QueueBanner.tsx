@@ -34,32 +34,12 @@ export const QueueBanner = () => {
   const { addSnackbar } = useSnackbar();
   const [isInitializing, setIsInitializing] = useState(false);
 
-  // walletImporting is written as the import start timestamp (patch —
-  // upstream used the string 'true' which never expired). Treat a flag
-  // older than FRESH_WINDOW_MS as stale and ignore it so the banner
-  // doesn't stick across reopens.
   useEffect(() => {
-    const FRESH_WINDOW_MS = 3_000;
-    const check = () => {
-      const raw = localStorage.getItem('walletImporting');
-      if (!raw) {
-        setIsInitializing(false);
-        return;
-      }
-      const ts = Number(raw);
-      if (!Number.isFinite(ts) || Date.now() - ts > FRESH_WINDOW_MS) {
-        // Stale flag — clean it up and drop the banner.
-        localStorage.removeItem('walletImporting');
-        setIsInitializing(false);
-        return;
-      }
-      setIsInitializing(true);
-    };
-    // Initial check on popup mount + re-check every second so the flag
-    // expires automatically while the popup is open.
-    check();
-    const poll = setInterval(check, 1_000);
-    return () => clearInterval(poll);
+    setTimeout(() => {
+      const localVar = localStorage.getItem('walletImporting');
+      console.log(`Local Storage Says Init Is: ${localVar}`);
+      setIsInitializing(localVar === 'true');
+    }, 1000);
   }, []);
 
   useEffect(() => {
