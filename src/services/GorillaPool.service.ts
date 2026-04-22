@@ -38,6 +38,29 @@ export class GorillaPoolService {
   };
 
   /**
+   * Fetch address-level tx history (spent + unspent outputs) from
+   * GorillaPool. Used by the TxHistory fallback path when spv-store's
+   * local tx log is empty because sync was aborted (ordinals.1sat.app
+   * outage). Display-only — no spending depends on this data.
+   *
+   * `/api/txos/address/{addr}/history` returns one row per output
+   * ever seen at the address. Callers aggregate by txid to form
+   * TxLog-compatible records.
+   */
+  getTxHistoryByAddress = async (
+    address: string,
+    limit = 100,
+  ): Promise<Array<GpOrdinalRow>> => {
+    const network = this.chromeStorageService.getNetwork();
+    const res = await fetch(
+      `${this.getBaseUrl(network)}/api/txos/address/${address}/history?limit=${limit}`,
+    );
+    if (!res.ok) throw new Error(`GP address history: HTTP ${res.status}`);
+    const rows = (await res.json()) as GpOrdinalRow[];
+    return Array.isArray(rows) ? rows : [];
+  };
+
+  /**
    * Fetch inscription-bearing (ordinal) UTXOs at an address. Used as
    * the fallback source for OrdinalService.getOrdinals when spv-store
    * is degraded and can't surface the user's NFTs locally.

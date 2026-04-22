@@ -14,6 +14,7 @@ import {
 } from '../utils/constants';
 import { FaTimes, FaChevronDown, FaChevronUp, FaLink, FaTag } from 'react-icons/fa'; // Import FaTag
 import { TxLog } from 'spv-store';
+import { mapGpHistoryToTxLogs } from '../utils/providerHelper';
 import { Button } from './Button';
 import bsvCoin from '../assets/bsv-coin.svg';
 import lock from '../assets/lock.svg';
@@ -138,7 +139,7 @@ export const TxHistory = (props: TxHistoryProps) => {
   const { oneSatSPV } = useServiceContext();
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 25;
-  const { gorillaPoolService, chromeStorageService } = useServiceContext();
+  const { gorillaPoolService, chromeStorageService, keysService } = useServiceContext();
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const isTestnet = chromeStorageService.getNetwork() === NetWork.Testnet;
 
@@ -147,17 +148,43 @@ export const TxHistory = (props: TxHistoryProps) => {
   useEffect(() => {
     const fetchData = async () => {
       if (!oneSatSPV) return;
+      // Tier 1: spv-store local tx log.
       try {
         const tsx = await oneSatSPV.getRecentTxs();
-        console.log(tsx);
-        setData(tsx);
+        if (tsx && tsx.length > 0) {
+          setData(tsx);
+          return;
+        }
       } catch (error) {
-        console.error('Error fetching data:', error);
+        console.warn('[TxHistory] spv-store getRecentTxs failed, falling back to GorillaPool:', error);
+      }
+
+      // Tier 2: GorillaPool address history. Display-only —
+      // shows receive events across the user's three addresses.
+      if (!keysService || !gorillaPoolService) return;
+      try {
+        const addresses = [
+          keysService.bsvAddress,
+          keysService.ordAddress,
+          keysService.identityAddress,
+        ].filter(Boolean);
+        const allRows = (
+          await Promise.all(
+            addresses.map((addr) => gorillaPoolService.getTxHistoryByAddress(addr).catch(() => [])),
+          )
+        ).flat();
+        const logs = mapGpHistoryToTxLogs(allRows);
+        if (logs.length > 0) {
+          console.warn(`[TxHistory] GorillaPool fallback returned ${logs.length} tx(s)`);
+        }
+        setData(logs);
+      } catch (error) {
+        console.error('[TxHistory] GorillaPool fallback error:', error);
       }
     };
 
     fetchData();
-  }, [oneSatSPV]);
+  }, [oneSatSPV, keysService, gorillaPoolService]);
 
   const paginatedData = useMemo(() => {
     const startIndex = (currentPage - 1) * itemsPerPage;

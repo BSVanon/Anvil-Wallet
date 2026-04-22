@@ -1,5 +1,5 @@
 import { Utils } from '@bsv/sdk';
-import { Txo } from 'spv-store';
+import { Txo, TxLog } from 'spv-store';
 import { Ordinal } from 'yours-wallet-provider';
 import { GpOrdinalRow } from '../services/types/gorillaPool.ordinal';
 
@@ -99,6 +99,80 @@ export function mapOrdinal(t: Txo): Ordinal {
  * spv-store being healthy, which is tracked separately via
  * SyncStatus.
  */
+/**
+ * Group GorillaPool address-history rows by txid and synthesize
+ * TxLog entries the TxHistory UI can render. Display-only fallback
+ * when spv-store's local tx log is empty.
+ *
+ * Simplification for launch: we only surface RECEIVED events (rows
+ * where the output credited the user's address). Outbound sends
+ * would require fetching each spent output's full tx to compute
+ * deltas, which is costly + out of scope for the display fallback.
+ * When spv-store is healthy again its getRecentTxs() returns full
+ * bi-directional history; the fallback is for visibility during
+ * degraded periods, not completeness.
+ *
+ * Each resulting TxLog carries a single `fund` summary entry with
+ * the net satoshis received in that tx at the queried addresses.
+ */
+export function mapGpHistoryToTxLogs(rows: GpOrdinalRow[]): TxLog[] {
+  // Aggregate by txid, summing satoshis across all outputs at the
+  // user's addresses in that tx. Track height / idx (min idx for
+  // deterministic ordering within a block).
+  const byTxid = new Map<
+    string,
+    { txid: string; height: number; idx: number; totalSats: number; hasOrdinal: boolean }
+  >();
+  for (const row of rows) {
+    if (!row?.txid) continue;
+    const existing = byTxid.get(row.txid);
+    const sats = Number(row.satoshis ?? 0);
+    const height = Number(row.height ?? 0);
+    const idx = Number(row.idx ?? 0);
+    const isOrdinal = row.origin != null;
+    if (!existing) {
+      byTxid.set(row.txid, {
+        txid: row.txid,
+        height,
+        idx,
+        totalSats: sats,
+        hasOrdinal: isOrdinal,
+      });
+    } else {
+      existing.totalSats += sats;
+      if (height && (!existing.height || height < existing.height)) existing.height = height;
+      if (idx && (!existing.idx || idx < existing.idx)) existing.idx = idx;
+      if (isOrdinal) existing.hasOrdinal = true;
+    }
+  }
+
+  // Produce TxLog entries. Sorted descending by height then idx so
+  // the most recent txs appear first (matching spv-store's
+  // getRecentTxs convention).
+  const logs: TxLog[] = [];
+  for (const agg of byTxid.values()) {
+    const log = {
+      txid: agg.txid,
+      height: agg.height,
+      idx: agg.idx,
+      source: 'gorillapool-fallback',
+      summary: {
+        // Use `fund` tag for BSV receives, `origin` tag if any
+        // output in the tx was inscribed (best-effort icon hint).
+        ...(agg.hasOrdinal
+          ? { origin: { amount: agg.totalSats } }
+          : { fund: { amount: agg.totalSats } }),
+      },
+    } as unknown as TxLog;
+    logs.push(log);
+  }
+  logs.sort((a, b) => {
+    if (b.height !== a.height) return b.height - a.height;
+    return b.idx - a.idx;
+  });
+  return logs;
+}
+
 export function mapGpOrdinal(row: GpOrdinalRow, ownerAddress: string): Ordinal {
   // Parse JSON-typed inscription content if GP already provided it.
   const originInscType = row.origin?.data?.insc?.file?.type;

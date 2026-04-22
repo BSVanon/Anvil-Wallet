@@ -182,16 +182,30 @@ if (isInServiceWorker) {
   const PROBE_TIMEOUT_MS = 3_000;
 
   const probeIndexerHealth = async (): Promise<boolean> => {
-    // Probe the 1sat.app root — if it responds at all (any status
-    // <500), the service is reachable. 504 means the backend is
-    // specifically the degraded path spv-store tries.
+    // Probe the ACCOUNT-SCOPED path that spv-store actually calls
+    // (/v5/acct/{accountId}/utxos), not the root /v5/acct. The root
+    // returns 404 when healthy — that's why the previous "status<500"
+    // check false-positived: 404-from-healthy-service looked the
+    // same as 504-from-degraded-service. Query the same endpoint
+    // spv-store will hit on re-register, so a passing probe is a
+    // real "register will succeed" signal.
+    //
+    // Uses the current selectedAccount as the probe address. If no
+    // account is loaded yet, return false — there's nothing to
+    // register against, so a retry is meaningless.
     try {
+      const { selectedAccount } = chromeStorageService.getCurrentAccountObject();
+      if (!selectedAccount) return false;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
-      const res = await fetch('https://ordinals.1sat.app/v5/acct', {
-        signal: controller.signal,
-      });
+      const res = await fetch(
+        `https://ordinals.1sat.app/v5/acct/${selectedAccount}/utxos?txo=true&limit=0&tags=*`,
+        { signal: controller.signal },
+      );
       clearTimeout(timer);
+      // 504 (the failure mode we observed) is the one we care about.
+      // Anything <500 means the account-scoped path is actually
+      // responding — register has a real chance of working.
       return res.status < 500;
     } catch {
       return false;

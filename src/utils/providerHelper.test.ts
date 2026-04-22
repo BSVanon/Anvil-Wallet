@@ -1,4 +1,4 @@
-import { mapGpOrdinal } from './providerHelper';
+import { mapGpOrdinal, mapGpHistoryToTxLogs } from './providerHelper';
 import { GpOrdinalRow } from '../services/types/gorillaPool.ordinal';
 
 describe('mapGpOrdinal', () => {
@@ -123,5 +123,88 @@ describe('mapGpOrdinal', () => {
     // Txo shape from spv-store. Callers of the fallback path should
     // treat this as display-only.
     expect(ord.script).toBe('');
+  });
+});
+
+describe('mapGpHistoryToTxLogs', () => {
+  function row(
+    overrides: Partial<GpOrdinalRow>,
+  ): GpOrdinalRow {
+    return {
+      txid: 'tx1',
+      vout: 0,
+      outpoint: 'tx1_0',
+      satoshis: 100,
+      height: 944000,
+      idx: '1',
+      owner: '1ABC',
+      spend: '',
+      origin: null,
+      data: null,
+      ...overrides,
+    };
+  }
+
+  it('returns empty for empty input', () => {
+    expect(mapGpHistoryToTxLogs([])).toEqual([]);
+  });
+
+  it('groups multiple outputs from the same tx into one TxLog', () => {
+    const logs = mapGpHistoryToTxLogs([
+      row({ txid: 'tx1', vout: 0, satoshis: 100 }),
+      row({ txid: 'tx1', vout: 1, satoshis: 200 }),
+    ]);
+    expect(logs.length).toBe(1);
+    expect(logs[0].txid).toBe('tx1');
+    expect(logs[0].summary?.fund?.amount).toBe(300);
+  });
+
+  it('produces separate TxLogs for different txids', () => {
+    const logs = mapGpHistoryToTxLogs([
+      row({ txid: 'tx1', satoshis: 100, height: 944000, idx: '1' }),
+      row({ txid: 'tx2', satoshis: 200, height: 944001, idx: '1' }),
+    ]);
+    expect(logs.length).toBe(2);
+    const txids = logs.map((l) => l.txid);
+    expect(txids).toContain('tx1');
+    expect(txids).toContain('tx2');
+  });
+
+  it('sorts by height descending (most recent first)', () => {
+    const logs = mapGpHistoryToTxLogs([
+      row({ txid: 'tx-old', height: 944000, idx: '1' }),
+      row({ txid: 'tx-new', height: 944999, idx: '1' }),
+      row({ txid: 'tx-mid', height: 944500, idx: '1' }),
+    ]);
+    expect(logs.map((l) => l.txid)).toEqual(['tx-new', 'tx-mid', 'tx-old']);
+  });
+
+  it('tags ordinal-bearing txs with origin summary (not fund)', () => {
+    const logs = mapGpHistoryToTxLogs([
+      row({
+        txid: 'nft-tx',
+        satoshis: 1,
+        origin: {
+          outpoint: 'nft-tx_0',
+          data: { insc: { file: { type: 'image/png' } } },
+        },
+      }),
+    ]);
+    expect(logs[0].summary?.origin).toBeDefined();
+    expect(logs[0].summary?.fund).toBeUndefined();
+  });
+
+  it('marks fallback source so callers can tell tier apart', () => {
+    const logs = mapGpHistoryToTxLogs([row({ txid: 'tx1' })]);
+    expect(logs[0].source).toBe('gorillapool-fallback');
+  });
+
+  it('skips rows without a txid', () => {
+    const logs = mapGpHistoryToTxLogs([
+      row({ txid: '' }),
+      row({ txid: 'real-tx', satoshis: 500 }),
+    ]);
+    expect(logs.length).toBe(1);
+    expect(logs[0].txid).toBe('real-tx');
   });
 });
