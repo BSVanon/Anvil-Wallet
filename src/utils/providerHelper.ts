@@ -1,6 +1,7 @@
 import { Utils } from '@bsv/sdk';
 import { Txo } from 'spv-store';
 import { Ordinal } from 'yours-wallet-provider';
+import { GpOrdinalRow } from '../services/types/gorillaPool.ordinal';
 
 export function mapOrdinal(t: Txo): Ordinal {
   let originJson: string | undefined;
@@ -85,4 +86,74 @@ export function mapOrdinal(t: Txo): Ordinal {
       // TODO (DAVID CASE): add sigma
     },
   };
+}
+
+/**
+ * Convert a GorillaPool `/api/txos/address/.../unspent` row that has
+ * `origin != null` into an Ordinal compatible with the display UI.
+ *
+ * Used as the fallback path in OrdinalService.getOrdinals when
+ * spv-store is degraded. Only fields the UI actually reads are
+ * populated; spend-path fields (`script`, full `origin.num`) may be
+ * blank when the source is GP — spending an ordinal still requires
+ * spv-store being healthy, which is tracked separately via
+ * SyncStatus.
+ */
+export function mapGpOrdinal(row: GpOrdinalRow, ownerAddress: string): Ordinal {
+  // Parse JSON-typed inscription content if GP already provided it.
+  const originInscType = row.origin?.data?.insc?.file?.type;
+  const originJson =
+    originInscType?.startsWith('application/json') || originInscType?.startsWith('application/bsv-20')
+      ? row.origin?.data?.insc?.file?.json
+      : undefined;
+
+  return {
+    txid: row.txid,
+    vout: row.vout,
+    outpoint: row.outpoint,
+    satoshis: Number(row.satoshis),
+    script: '', // not returned by GP's address-unspent endpoint — fetch per-outpoint if needed for a spend
+    owner: row.owner ?? ownerAddress,
+    spend: row.spend || '',
+    origin: row.origin && {
+      outpoint: row.origin.outpoint,
+      nonce: Number(row.origin.nonce ?? 0),
+      num: row.origin.num,
+      data: {
+        insc: {
+          file: row.origin.data?.insc?.file && {
+            type: row.origin.data.insc.file.type,
+            size: Number(row.origin.data.insc.file.size ?? 0),
+            hash: row.origin.data.insc.file.hash,
+            text:
+              row.origin.data.insc.file.type?.startsWith('text') ||
+              row.origin.data.insc.file.type?.startsWith('application/op-ns')
+                ? undefined // GP doesn't inline text content in this endpoint
+                : undefined,
+            json: originJson as never,
+          },
+        },
+        map: row.origin.data?.map as never,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        sigma: (row.origin.data?.sigma || []) as any,
+      },
+    },
+    height: row.height,
+    idx: row.idx ? Number(row.idx) : undefined,
+    data: row.data && {
+      insc: {
+        file: row.data.insc?.file && {
+          type: row.data.insc.file.type,
+          size: Number(row.data.insc.file.size ?? 0),
+          hash: row.data.insc.file.hash,
+          text: undefined,
+          json: row.data.insc.file.json as never,
+        },
+      },
+      bsv20: row.data.bsv20 && {
+        ...row.data.bsv20,
+        amt: Number(row.data.bsv20.amt ?? 0),
+      },
+    },
+  } as Ordinal;
 }

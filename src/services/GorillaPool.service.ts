@@ -1,6 +1,7 @@
 import { Bsv20, BSV20Txo, NetWork, Ordinal } from 'yours-wallet-provider';
 import { GP_BASE_URL, GP_TESTNET_BASE_URL } from '../utils/constants';
 import { MarketResponse, Token } from './types/gorillaPool.types';
+import { GpOrdinalRow } from './types/gorillaPool.ordinal';
 import { ChromeStorageService } from './ChromeStorage.service';
 import type { SPVStore } from 'spv-store';
 import type { WhatsOnChainService } from './WhatsOnChain.service';
@@ -34,6 +35,38 @@ export class GorillaPoolService {
     } catch (e) {
       throw new Error(JSON.stringify(e));
     }
+  };
+
+  /**
+   * Fetch inscription-bearing (ordinal) UTXOs at an address. Used as
+   * the fallback source for OrdinalService.getOrdinals when spv-store
+   * is degraded and can't surface the user's NFTs locally.
+   *
+   * GP's `/api/txos/address/{addr}/unspent` returns all UTXOs; filter
+   * for `origin != null` on the client to isolate ordinal-bearing
+   * outputs. The response shape is directly compatible with the
+   * Ordinal type via a small mapping (see mapGpOrdinalRow below).
+   *
+   * Returns the raw GP rows — caller is expected to normalize via the
+   * wallet's Ordinal shape. We keep the raw shape here to avoid
+   * circular deps with yours-wallet-provider types.
+   */
+  getOrdinalUtxosByAddress = async (
+    address: string,
+  ): Promise<Array<GpOrdinalRow>> => {
+    const network = this.chromeStorageService.getNetwork();
+    const res = await fetch(
+      `${this.getBaseUrl(network)}/api/txos/address/${address}/unspent?limit=200`,
+    );
+    if (!res.ok) {
+      throw new Error(`GP address unspent (ord): HTTP ${res.status}`);
+    }
+    const rows = (await res.json()) as GpOrdinalRow[];
+    if (!Array.isArray(rows)) return [];
+    // Only outputs with an inscription origin — that's what "ordinal"
+    // means here. Fund UTXOs have origin=null and are handled by the
+    // SpendableUtxos resolver via a different endpoint.
+    return rows.filter((r) => r && r.origin != null);
   };
 
   /**

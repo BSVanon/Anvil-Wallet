@@ -17,7 +17,7 @@ import { Bsv20, Ordinal, PaginatedOrdinalsResponse, PurchaseOrdinal } from 'your
 import { P2PKH, PrivateKey, SatoshisPerKilobyte, Script, Transaction, Utils } from '@bsv/sdk';
 import { BsvService } from './Bsv.service';
 import { BSV20_INDEX_FEE } from '../utils/constants';
-import { mapOrdinal } from '../utils/providerHelper';
+import { mapOrdinal, mapGpOrdinal } from '../utils/providerHelper';
 import { SPVStore, Outpoint, TxoLookup, TxoSort } from 'spv-store';
 import { isValidEmail } from '../utils/tools';
 //@ts-ignore
@@ -44,18 +44,61 @@ export class OrdinalService {
   ) {}
 
   getOrdinals = async (from = ''): Promise<PaginatedOrdinalsResponse> => {
-    const ordinals = await this.oneSatSPV.search(new TxoLookup('origin', 'type'), TxoSort.DESC, 50, from);
-    const mapped = ordinals.txos
-      .filter(
-        (o) =>
-          o.data?.origin?.data?.insc?.file?.type !== 'panda/tag' &&
-          o.data?.origin?.data?.insc?.file?.type !== 'yours/tag',
-      )
-      .map(mapOrdinal);
-    return {
-      ordinals: mapped,
-      from: ordinals.nextPage,
-    };
+    // Tier 1: spv-store (ordinal-aware, paginated, well-tested).
+    try {
+      const ordinals = await this.oneSatSPV.search(new TxoLookup('origin', 'type'), TxoSort.DESC, 50, from);
+      const mapped = ordinals.txos
+        .filter(
+          (o) =>
+            o.data?.origin?.data?.insc?.file?.type !== 'panda/tag' &&
+            o.data?.origin?.data?.insc?.file?.type !== 'yours/tag',
+        )
+        .map(mapOrdinal);
+      if (mapped.length > 0 || ordinals.txos.length > 0) {
+        // Non-empty primary (including non-mapped outputs that got
+        // filtered) → trust it. Only fall through on truly empty.
+        return { ordinals: mapped, from: ordinals.nextPage };
+      }
+    } catch (err) {
+      console.warn('[OrdinalService] spv-store tier threw — falling back to GorillaPool:', (err as Error).message);
+    }
+
+    // Tier 2: GorillaPool inscription query at the user's ord +
+    // paypk addresses. Used when spv-store's ordinal index is
+    // degraded. Pagination is not supported via this fallback (GP
+    // returns up to 200 at once); `from` is ignored on this tier.
+    // This is a display-only path — spending an ordinal still
+    // requires spv-store to be healthy, which is tracked via
+    // SyncStatus.
+    if (from) {
+      // Pagination cursor set but primary is empty → no more data to
+      // serve via fallback, return empty.
+      return { ordinals: [], from: undefined };
+    }
+    try {
+      const addresses = [this.keysService.ordAddress, this.keysService.bsvAddress].filter(Boolean);
+      const rows = (
+        await Promise.all(
+          addresses.map((addr) =>
+            this.gorillaPoolService.getOrdinalUtxosByAddress(addr).catch(() => []),
+          ),
+        )
+      ).flat();
+      const mapped = rows
+        .filter(
+          (r) =>
+            r.origin?.data?.insc?.file?.type !== 'panda/tag' &&
+            r.origin?.data?.insc?.file?.type !== 'yours/tag',
+        )
+        .map((r) => mapGpOrdinal(r, r.owner ?? ''));
+      if (mapped.length > 0) {
+        console.warn(`[OrdinalService] GorillaPool fallback returned ${mapped.length} ordinal(s)`);
+      }
+      return { ordinals: mapped, from: undefined };
+    } catch (err) {
+      console.warn('[OrdinalService] GorillaPool fallback failed:', (err as Error).message);
+      return { ordinals: [], from: undefined };
+    }
   };
 
   getOrdinal = async (outpoint: string): Promise<Ordinal | undefined> => {
