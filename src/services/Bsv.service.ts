@@ -10,10 +10,12 @@ import { removeBase64Prefix, truncate } from '../utils/format';
 import { getPrivateKeyFromTag, Keys } from '../utils/keys';
 import { ChromeStorageService } from './ChromeStorage.service';
 import { ContractService } from './Contract.service';
+import { GorillaPoolService } from './GorillaPool.service';
 import { KeysService } from './Keys.service';
 import { FundRawTxResponse, LockData, InWalletBsvResponse } from './types/bsv.types';
 import { ChromeStorageObject } from './types/chromeStorage.types';
 import { WhatsOnChainService } from './WhatsOnChain.service';
+import { getSpendableFundUtxos } from './SpendableUtxos.service';
 import {
   BigNumber,
   BSM,
@@ -45,6 +47,7 @@ export class BsvService {
     private readonly contractService: ContractService,
     private readonly chromeStorageService: ChromeStorageService,
     private readonly oneSatSPV: SPVStore,
+    private readonly gorillaPoolService: GorillaPoolService,
   ) {
     this.bsvBalance = 0;
     this.exchangeRate = 0;
@@ -406,114 +409,34 @@ export class BsvService {
   };
 
   /**
-   * Detect a 1Sat Ordinals inscription envelope in a raw locking script.
+   * Fund UTXO lookup — thin wrapper over the shared SpendableUtxos
+   * resolver. See services/SpendableUtxos.service.ts for the ordered
+   * 3-tier failover chain (spv-store → GorillaPool → WoC) and
+   * fail-closed filter composition.
    *
-   * Fail-closed filter for the WoC-fallback path: if we can't ask an
-   * ordinal indexer whether an outpoint is inscribed, we scan the script
-   * bytes ourselves for the canonical envelope pattern:
-   *
-   *   <P2PKH prefix…> OP_FALSE OP_IF OP_PUSH "ord" …
-   *
-   * Matches 99% of 1Sat ordinals + most BRC-20/21 inscriptions. Does NOT
-   * catch non-inscription ordinal protocols (Lock, Cosign, MAP). For the
-   * fund-UTXO pool this is adequate because those other protocols use
-   * structurally distinct scripts that aren't plain P2PKH — spv-store's
-   * normal basket separation keeps them out of the fund pool anyway.
-   */
-  private hasInscriptionEnvelope = (scriptBytes: number[]): boolean => {
-    for (let i = 0; i < scriptBytes.length - 5; i++) {
-      // OP_FALSE (0x00) + OP_IF (0x63) + push-3 (0x03) + 'o','r','d' (0x6f,0x72,0x64)
-      if (
-        scriptBytes[i] === 0x00 &&
-        scriptBytes[i + 1] === 0x63 &&
-        scriptBytes[i + 2] === 0x03 &&
-        scriptBytes[i + 3] === 0x6f &&
-        scriptBytes[i + 4] === 0x72 &&
-        scriptBytes[i + 5] === 0x64
-      ) {
-        return true;
-      }
-    }
-    return false;
-  };
-
-  /**
-   * Fund UTXO lookup with fail-loud fallback.
-   *
-   * Primary: spv-store's 'fund' basket (ordinal-aware, well-tested).
-   * Fallback: WhatsOnChain UTXO query with local inscription-envelope
-   * filter — triggered only if spv-store is degraded (times out or
-   * throws).
-   *
-   * Hard invariant: when the fallback runs, any output with a 1Sat
-   * inscription envelope in its locking script is EXCLUDED from the
-   * fund pool. The sole user-facing consequence of the fallback path
-   * is "minor delay + a warning in the console" when spv-store is
-   * unhealthy; no silent downgrade of ordinal safety.
-   *
-   * Other protocols (Cosign, MAP) use non-P2PKH structures that
-   * wouldn't show up at the user's paypk-derived address anyway, and
-   * spv-store's basket separation keeps them out of 'fund' under
-   * normal operation.
+   * Returns Txo-shaped objects compatible with existing callers
+   * (updateBsvBalance, fundRawTx, etc.). Downstream code reads
+   * txo.satoshis, txo.outpoint, and txo.script — no other fields.
    */
   fundingTxos = async () => {
-    const PRIMARY_TIMEOUT_MS = 8000;
-    // Primary: spv-store's local TXO index (ordinal-aware). We used to
-    // trust its result unconditionally and only fall back to WoC on
-    // throw or timeout. That missed the degraded-sync case: when
-    // spv-store's initial sync fails (e.g. ordinals.1sat.app account
-    // registration 504s — observed 2026-04-22), .search() succeeds
-    // quickly with an empty result because the local index is empty.
-    // Empty-result path now cross-checks WoC before trusting it.
-    let primaryFailed = false;
-    try {
-      const primary = Promise.race([
-        this.oneSatSPV.search(new TxoLookup('fund'), TxoSort.ASC, 0),
-        new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), PRIMARY_TIMEOUT_MS)),
-      ]);
-      const result = await primary;
-      if (result !== 'timeout') {
-        // Trust non-empty primary immediately — it's ordinal-segregated
-        // and has richer metadata than WoC can provide.
-        if (result.txos.length > 0) return result.txos;
-        // Empty primary: cross-check WoC below. If WoC finds UTXOs
-        // and the primary missed them, sync is degraded and we need
-        // the WoC view to unblock balance/mint.
-        console.warn('[fundingTxos] spv-store primary returned empty — cross-checking WoC');
-      } else {
-        primaryFailed = true;
-        console.warn(
-          `[fundingTxos] spv-store primary timed out after ${PRIMARY_TIMEOUT_MS}ms — falling back to WoC`,
-        );
-      }
-    } catch (err) {
-      primaryFailed = true;
-      console.warn('[fundingTxos] spv-store primary threw — falling back to WoC:', (err as Error).message);
-    }
-    // Fallback / empty-cross-check: WoC UTXO query at the user's BSV
-    // address, filtered fail-closed against the 1Sat inscription
-    // envelope so ordinals can't leak into the fund UTXO pool.
     const bsvAddress = this.keysService.bsvAddress;
-    const wocUtxos = await this.wocService.getUtxosByAddress(bsvAddress);
+    const utxos = await getSpendableFundUtxos(bsvAddress, {
+      spv: this.oneSatSPV,
+      gorilla: this.gorillaPoolService,
+      woc: this.wocService,
+    });
     const { Utils: sdkUtils } = await import('@bsv/sdk');
-    const fallbackTxos = wocUtxos
-      .filter((u) => !this.hasInscriptionEnvelope(sdkUtils.toArray(u.scriptHex, 'hex') as number[]))
-      .map((u) => ({
-        outpoint: { txid: u.txid, vout: u.vout, toString: () => `${u.txid}_${u.vout}` },
-        satoshis: BigInt(u.satoshis),
-        script: sdkUtils.toArray(u.scriptHex, 'hex') as number[],
-        owner: bsvAddress,
-        data: {} as Record<string, unknown>,
-        events: [] as string[],
-        status: 2, // TxoStatus.Validated — WoC says it's unspent + on-chain
-        spend: '',
-        block: undefined,
-      }));
-    console.warn(
-      `[fundingTxos] WoC ${primaryFailed ? 'fallback' : 'cross-check'} returned ${wocUtxos.length} UTXO(s); ` +
-        `${fallbackTxos.length} eligible after inscription-envelope filter`,
-    );
-    return fallbackTxos as unknown as Awaited<ReturnType<typeof this.oneSatSPV.search>>['txos'];
+    return utxos.map((u) => ({
+      outpoint: { txid: u.txid, vout: u.vout, toString: () => `${u.txid}_${u.vout}` },
+      satoshis: u.satoshis,
+      script: sdkUtils.toArray(u.scriptHex, 'hex') as number[],
+      owner: bsvAddress,
+      data: {} as Record<string, unknown>,
+      events: [] as string[],
+      status: 2, // TxoStatus.Validated
+      spend: '',
+      block: undefined,
+    })) as unknown as Awaited<ReturnType<typeof this.oneSatSPV.search>>['txos'];
   };
 
   fundRawTx = async (rawtx: string, password: string): Promise<FundRawTxResponse> => {

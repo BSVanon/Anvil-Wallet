@@ -23,7 +23,7 @@ const initializeServices = async () => {
   const contractService = new ContractService(keysService, oneSatSPV, wocService);
   const mneeService = new mnee({ environment: 'production', apiKey: MNEE_API_TOKEN });
 
-  const bsvService = new BsvService(keysService, wocService, contractService, chromeStorageService, oneSatSPV);
+  const bsvService = new BsvService(keysService, wocService, contractService, chromeStorageService, oneSatSPV, gorillaPoolService);
   const ordinalService = new OrdinalService(
     keysService,
     bsvService,
