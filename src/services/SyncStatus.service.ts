@@ -151,7 +151,7 @@ export function displayForStatus(status: SyncStatus): SyncStatusDisplay {
         show: true,
         title: 'Indexer degraded',
         subtitle:
-          'Some holdings may be hidden. Balance uses fallback data. Retry to reconnect.',
+          'Balance + NFTs served by fallback indexer. Send/receive still work. Retry to reconnect the primary sync.',
         color: 'red',
         showRetry: true,
       };

@@ -90,11 +90,23 @@ export const QueueBanner = () => {
     return unsubscribe;
   }, []);
 
+  // Cooldown seconds remaining after a retry click. Blocks button
+  // spam when the underlying service is still down — a failed retry
+  // still destroys + re-inits SPV, and doing that repeatedly is
+  // expensive and makes the wallet feel broken. 30s is the minimum
+  // time a realistic indexer recovery takes.
+  const RETRY_COOLDOWN_SECONDS = 30;
+  const [cooldownLeft, setCooldownLeft] = useState(0);
+  useEffect(() => {
+    if (cooldownLeft <= 0) return;
+    const id = window.setTimeout(() => setCooldownLeft((n) => n - 1), 1000);
+    return () => window.clearTimeout(id);
+  }, [cooldownLeft]);
+
   const statusDisplay = displayForStatus(syncStatus);
 
   const handleRetry = async () => {
-    // Optimistic local write so the UI flips immediately; background
-    // will also write 'retrying' when it processes the message.
+    setCooldownLeft(RETRY_COOLDOWN_SECONDS);
     await writeSyncStatus('retrying');
     try {
       sendMessage({ action: YoursEventName.SYNC_RETRY });
@@ -102,6 +114,14 @@ export const QueueBanner = () => {
       console.error('[QueueBanner] failed to send retry message:', err);
     }
   };
+
+  const retryLabel =
+    cooldownLeft > 0
+      ? `Retry in ${cooldownLeft}s`
+      : syncStatus === 'retrying'
+        ? 'Retrying…'
+        : 'Retry sync';
+  const retryDisabled = syncStatus === 'retrying' || cooldownLeft > 0;
 
   const walletReady = !!keysService?.bsvAddress;
   // Show the active queue-progress banner only when spv-store is
@@ -143,8 +163,8 @@ export const QueueBanner = () => {
           {statusDisplay.subtitle}
         </span>
         {statusDisplay.showRetry && (
-          <RetryButton onClick={handleRetry} disabled={syncStatus === 'retrying'}>
-            Retry sync
+          <RetryButton onClick={handleRetry} disabled={retryDisabled}>
+            {retryLabel}
           </RetryButton>
         )}
       </Banner>

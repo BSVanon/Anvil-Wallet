@@ -162,23 +162,77 @@ if (isInServiceWorker) {
   };
 
   /**
-   * Retry SPV init after a sync-degraded event. Destroys the current
-   * SPV instance, clears the indexer error state, and re-initializes.
-   * Invoked via SYNC_RETRY message from the popup's Retry button.
-   * Same mechanism as switchAccount but without re-reading the
-   * storage (account doesn't change).
+   * Retry SPV init after a sync-degraded event. Invoked via
+   * SYNC_RETRY message from the popup's Retry button.
+   *
+   * Flow:
+   *   1. Probe the canonical indexer endpoint with a 3s timeout.
+   *      If the service is still unavailable, flip straight back to
+   *      'degraded' without destroying the SPV instance — a destroy
+   *      + reinit against a still-down service is expensive and
+   *      pointless.
+   *   2. If the probe succeeds, destroy the current SPV and re-init.
+   *      The unhandledrejection listener will flip status to
+   *      'degraded' if register() still fails; queue events will
+   *      flip it to 'healthy' if sync starts.
+   *   3. Cap the whole operation at 15 seconds — after that the
+   *      'retrying' state would feel broken to the user.
    */
+  const RETRY_TIMEOUT_MS = 15_000;
+  const PROBE_TIMEOUT_MS = 3_000;
+
+  const probeIndexerHealth = async (): Promise<boolean> => {
+    // Probe the 1sat.app root — if it responds at all (any status
+    // <500), the service is reachable. 504 means the backend is
+    // specifically the degraded path spv-store tries.
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+      const res = await fetch('https://ordinals.1sat.app/v5/acct', {
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      return res.status < 500;
+    } catch {
+      return false;
+    }
+  };
+
   const retrySync = async () => {
     await writeSyncStatus('retrying');
-    try {
+
+    // Cap the whole operation so the banner never stays in 'retrying'
+    // longer than the timeout — a long hang is worse than a quick
+    // honest failure.
+    const timeoutP = new Promise<'timeout'>((resolve) =>
+      setTimeout(() => resolve('timeout'), RETRY_TIMEOUT_MS),
+    );
+
+    const retryP = (async () => {
+      const healthy = await probeIndexerHealth();
+      if (!healthy) {
+        console.warn('[SyncStatus] retry probe: indexer still unavailable');
+        return 'still-down' as const;
+      }
       await (await oneSatSPVPromise).destroy();
       oneSatSPVPromise = initOneSatSPV(chromeStorageService, isInServiceWorker);
       await oneSatSPVPromise;
-      await writeSyncStatus('initializing');
       initNewTxsListener();
-    } catch (err) {
-      console.error('[SyncStatus] retry failed:', err);
+      return 'ok' as const;
+    })();
+
+    const outcome = await Promise.race([retryP, timeoutP]);
+    if (outcome === 'timeout') {
+      console.warn('[SyncStatus] retry timed out after', RETRY_TIMEOUT_MS, 'ms');
       await writeSyncStatus('degraded');
+    } else if (outcome === 'still-down') {
+      await writeSyncStatus('degraded');
+    } else {
+      // 'ok' — init resolved cleanly. The unhandledrejection listener
+      // will flip to 'degraded' if register still fails; a queueStats
+      // event will flip to 'healthy' if sync is progressing. Seed
+      // with 'initializing' for the transitional state.
+      await writeSyncStatus('initializing');
     }
   };
 
@@ -263,6 +317,7 @@ if (isInServiceWorker) {
       YoursEventName.DECRYPT_RESPONSE,
       YoursEventName.SYNC_UTXOS,
       YoursEventName.SWITCH_ACCOUNT,
+      YoursEventName.SYNC_RETRY,
       YoursEventName.SIGNED_OUT,
     ];
 
@@ -1493,7 +1548,12 @@ if (isInServiceWorker) {
   // HANDLE WINDOW CLOSE *****************************************
   chrome.windows.onRemoved.addListener((closedWindowId) => {
     console.log('Window closed: ', closedWindowId);
-    localStorage.removeItem('walletImporting');
+    // Upstream had `localStorage.removeItem('walletImporting')` here —
+    // removed 2026-04-22. localStorage is undefined in MV3 service
+    // workers, so the call was throwing "ReferenceError:
+    // localStorage is not defined" on every popup close. The flag
+    // it was clearing is now managed by SyncStatus (see
+    // services/SyncStatus.service.ts).
 
     if (closedWindowId === popupWindowId) {
       if (responseCallbackForConnectRequest) {
