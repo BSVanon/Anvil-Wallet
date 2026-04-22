@@ -458,20 +458,41 @@ export class BsvService {
    */
   fundingTxos = async () => {
     const PRIMARY_TIMEOUT_MS = 8000;
+    // Primary: spv-store's local TXO index (ordinal-aware). We used to
+    // trust its result unconditionally and only fall back to WoC on
+    // throw or timeout. That missed the degraded-sync case: when
+    // spv-store's initial sync fails (e.g. ordinals.1sat.app account
+    // registration 504s — observed 2026-04-22), .search() succeeds
+    // quickly with an empty result because the local index is empty.
+    // Empty-result path now cross-checks WoC before trusting it.
+    let primaryFailed = false;
     try {
       const primary = Promise.race([
         this.oneSatSPV.search(new TxoLookup('fund'), TxoSort.ASC, 0),
         new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), PRIMARY_TIMEOUT_MS)),
       ]);
       const result = await primary;
-      if (result !== 'timeout') return result.txos;
-      console.warn(
-        `[fundingTxos] spv-store primary timed out after ${PRIMARY_TIMEOUT_MS}ms — falling back to WoC`,
-      );
+      if (result !== 'timeout') {
+        // Trust non-empty primary immediately — it's ordinal-segregated
+        // and has richer metadata than WoC can provide.
+        if (result.txos.length > 0) return result.txos;
+        // Empty primary: cross-check WoC below. If WoC finds UTXOs
+        // and the primary missed them, sync is degraded and we need
+        // the WoC view to unblock balance/mint.
+        console.warn('[fundingTxos] spv-store primary returned empty — cross-checking WoC');
+      } else {
+        primaryFailed = true;
+        console.warn(
+          `[fundingTxos] spv-store primary timed out after ${PRIMARY_TIMEOUT_MS}ms — falling back to WoC`,
+        );
+      }
     } catch (err) {
+      primaryFailed = true;
       console.warn('[fundingTxos] spv-store primary threw — falling back to WoC:', (err as Error).message);
     }
-    // Fallback: WoC UTXO query at the user's BSV address.
+    // Fallback / empty-cross-check: WoC UTXO query at the user's BSV
+    // address, filtered fail-closed against the 1Sat inscription
+    // envelope so ordinals can't leak into the fund UTXO pool.
     const bsvAddress = this.keysService.bsvAddress;
     const wocUtxos = await this.wocService.getUtxosByAddress(bsvAddress);
     const { Utils: sdkUtils } = await import('@bsv/sdk');
@@ -489,7 +510,7 @@ export class BsvService {
         block: undefined,
       }));
     console.warn(
-      `[fundingTxos] WoC fallback returned ${wocUtxos.length} UTXO(s); ` +
+      `[fundingTxos] WoC ${primaryFailed ? 'fallback' : 'cross-check'} returned ${wocUtxos.length} UTXO(s); ` +
         `${fallbackTxos.length} eligible after inscription-envelope filter`,
     );
     return fallbackTxos as unknown as Awaited<ReturnType<typeof this.oneSatSPV.search>>['txos'];

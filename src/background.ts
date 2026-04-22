@@ -701,12 +701,18 @@ if (isInServiceWorker) {
         if (!oneSatSPV) throw Error('SPV not initialized!');
 
         // 1) spv-store primary (ordinal-aware via basket segregation).
+        // Trust non-empty immediately; empty falls through to WoC so a
+        // degraded-sync wallet (ordinals.1sat.app 504 during initial
+        // registration, observed 2026-04-22) still returns real UTXOs
+        // when WoC sees them. Without this, a fresh-restore wallet with
+        // real BSV on-chain can't mint/send because the dApp handler
+        // returns an empty array.
         try {
           const primary = await Promise.race([
             oneSatSPV.search(new TxoLookup('fund'), TxoSort.ASC, 0),
             new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), PRIMARY_TIMEOUT_MS)),
           ]);
-          if (primary !== 'timeout') {
+          if (primary !== 'timeout' && primary.txos.length > 0) {
             const utxos = primary.txos.map((txo) => ({
               txid: txo.outpoint.txid,
               vout: txo.outpoint.vout,
@@ -716,7 +722,11 @@ if (isInServiceWorker) {
             sendResponse({ type: YoursEventName.GET_PAYMENT_UTXOS, success: true, data: utxos });
             return;
           }
-          console.warn(`[getPaymentUtxos] spv-store primary timed out after ${PRIMARY_TIMEOUT_MS}ms — falling back to WoC`);
+          if (primary === 'timeout') {
+            console.warn(`[getPaymentUtxos] spv-store primary timed out after ${PRIMARY_TIMEOUT_MS}ms — falling back to WoC`);
+          } else {
+            console.warn('[getPaymentUtxos] spv-store primary returned empty — cross-checking WoC');
+          }
         } catch (err) {
           console.warn('[getPaymentUtxos] spv-store primary threw — falling back to WoC:', (err as Error).message);
         }
