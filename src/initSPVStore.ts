@@ -98,6 +98,22 @@ export const initOneSatSPV = async (chromeStorageService: ChromeStorageService, 
     syncSources.add('mnee');
   }
 
+  // [anvil-diag] Diagnostic logging for restore-flow UTXO sync failure
+  // (Robert's real Yours seed shows zero balance + no stepper). Tracks
+  // whether sync is actually enabled when SPV initializes. If `!!account`
+  // is false at init time, startSync is forced false and nothing ever
+  // syncs for this SPV instance.
+  console.log('[anvil-diag] initOneSatSPV', {
+    startSyncRequested: startSync,
+    hasAccount: !!account,
+    hasSelectedAccount: !!selectedAccount,
+    ownersCount: owners.size,
+    ownersNonEmpty: [...owners].filter(Boolean).length,
+    willStartSync: startSync && !!account,
+    syncSources: [...syncSources],
+    network,
+  });
+
   const oneSatSPV = await OneSatWebSPV.init(
     selectedAccount || '',
     indexers,
@@ -110,13 +126,20 @@ export const initOneSatSPV = async (chromeStorageService: ChromeStorageService, 
 
   if (!oneSatSPV) throw Error('SPV not initialized!');
 
+  console.log('[anvil-diag] OneSatWebSPV.init resolved', {
+    selectedAccount: selectedAccount || '(none)',
+  });
+
   await registerEventListeners(oneSatSPV, selectedAccount || '', startSync);
 
   return oneSatSPV;
 };
 
 const registerEventListeners = async (oneSatSPV: OneSatWebSPV, selectedAccount: string, startSync: boolean) => {
+  console.log('[anvil-diag] registerEventListeners attached', { startSync, selectedAccount: selectedAccount || '(none)' });
+
   oneSatSPV.events.on('queueStats', (data: { length: number }) => {
+    console.log('[anvil-diag] queueStats event', data);
     const message: QueueTrackerMessage = { action: YoursEventName.QUEUE_STATUS_UPDATE, data };
     try {
       sendMessage(message);
@@ -125,6 +148,7 @@ const registerEventListeners = async (oneSatSPV: OneSatWebSPV, selectedAccount: 
   });
 
   oneSatSPV.events.on('importing', (data: { tag: string; name: string }) => {
+    console.log('[anvil-diag] importing event', data);
     const message: ImportTrackerMessage = { action: YoursEventName.IMPORT_STATUS_UPDATE, data };
     message.data.tag === 'wallet' && localStorage.setItem('walletImporting', 'true');
     try {
@@ -134,6 +158,7 @@ const registerEventListeners = async (oneSatSPV: OneSatWebSPV, selectedAccount: 
   });
 
   oneSatSPV.events.on('fetchingTx', (data: { txid: string }) => {
+    console.log('[anvil-diag] fetchingTx event', data);
     const message: FetchingMessage = { action: YoursEventName.FETCHING_TX_STATUS_UPDATE, data };
     try {
       sendMessage(message);

@@ -169,10 +169,20 @@ if (isInServiceWorker) {
   };
 
   const switchAccount = async () => {
+    console.log('[anvil-diag] switchAccount: destroy() starting');
     await (await oneSatSPVPromise).destroy();
+    console.log('[anvil-diag] switchAccount: destroyed, re-reading storage');
     chromeStorageService = new ChromeStorageService();
     await chromeStorageService.getAndSetStorage();
+    const { account, selectedAccount } = chromeStorageService.getCurrentAccountObject();
+    console.log('[anvil-diag] switchAccount: post-reload state', {
+      hasAccount: !!account,
+      hasSelectedAccount: !!selectedAccount,
+      isInServiceWorker,
+    });
     oneSatSPVPromise = initOneSatSPV(chromeStorageService, isInServiceWorker);
+    await oneSatSPVPromise;
+    console.log('[anvil-diag] switchAccount: re-init complete');
     initNewTxsListener();
   };
 
