@@ -36,6 +36,70 @@ export class GorillaPoolService {
     }
   };
 
+  /**
+   * Fetch unspent fund UTXOs (non-ordinal BSV) at an address, with
+   * locking-script hex included. Used by the SpendableUtxos resolver
+   * as the second tier of the failover chain (primary is spv-store's
+   * local fund basket; this is hit when spv-store is degraded).
+   *
+   * GorillaPool exposes ordinal-aware filtering server-side via
+   * `bsv20=false`: outputs bearing BSV-20/21 inscriptions are
+   * excluded at the indexer. That plus the resolver's local
+   * fail-closed filter makes this a safe ordinal-aware source.
+   *
+   * Two-stage fetch:
+   *   1) GET /api/txos/address/{addr}/unspent?bsv20=false → outpoints
+   *      + satoshis (no script in this response).
+   *   2) For each outpoint: GET /api/txos/{outpoint}?script=true →
+   *      base64-encoded script, decode to hex. Parallel, bounded by
+   *      the address-list length.
+   *
+   * Per-call timeouts are the caller's responsibility — wrap this in
+   * a Promise.race() with a timeout sentinel in the resolver.
+   */
+  getFundUtxosByAddress = async (
+    address: string,
+  ): Promise<Array<{ txid: string; vout: number; satoshis: number; scriptHex: string }>> => {
+    const network = this.chromeStorageService.getNetwork();
+    const listRes = await fetch(
+      `${this.getBaseUrl(network)}/api/txos/address/${address}/unspent?bsv20=false&limit=200`,
+    );
+    if (!listRes.ok) {
+      throw new Error(`GP address unspent: HTTP ${listRes.status}`);
+    }
+    const rows = (await listRes.json()) as Array<{
+      txid: string;
+      vout: number;
+      outpoint: string;
+      satoshis: number;
+    }>;
+    if (!Array.isArray(rows) || rows.length === 0) return [];
+
+    const fetched = await Promise.all(
+      rows.map(async (row) => {
+        try {
+          const r = await fetch(
+            `${this.getBaseUrl(network)}/api/txos/${row.outpoint}?script=true`,
+          );
+          if (!r.ok) return null;
+          const data = (await r.json()) as { script?: string };
+          if (!data.script) return null;
+          // GorillaPool returns base64; our filter + wallet primitives work in hex.
+          const scriptHex = Buffer.from(data.script, 'base64').toString('hex');
+          return {
+            txid: row.txid,
+            vout: row.vout,
+            satoshis: Number(row.satoshis),
+            scriptHex,
+          };
+        } catch {
+          return null;
+        }
+      }),
+    );
+    return fetched.filter((x): x is NonNullable<typeof x> => x !== null);
+  };
+
   getTokenPriceInSats = async (tokenIds: string[]) => {
     const network = this.chromeStorageService.getNetwork();
     const result: { id: string; satPrice: number }[] = [];
