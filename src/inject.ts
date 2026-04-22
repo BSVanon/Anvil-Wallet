@@ -89,6 +89,7 @@ export enum YoursEventName {
   FETCHING_TX_STATUS_UPDATE = 'fetchingTx', // This is not exposed on the provider
   BLOCK_HEIGHT_UPDATE = 'blockHeightUpdate', // This is not exposed on the provider
   SWITCH_ACCOUNT = 'switchAccount', // This is not exposed on the provider
+  SYNC_RETRY = 'syncRetry', // This is not exposed on the provider; sent by Retry button in QueueBanner
 }
 
 export enum CustomListenerName {

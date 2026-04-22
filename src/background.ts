@@ -47,6 +47,10 @@ import { initOneSatSPV } from './initSPVStore';
 import { CHROME_STORAGE_OBJECT_VERSION, HOSTED_YOURS_IMAGE, MNEE_API_TOKEN } from './utils/constants';
 import { convertLockReqToSendBsvReq } from './utils/tools';
 import { getSpendableFundUtxos } from './services/SpendableUtxos.service';
+import {
+  writeSyncStatus,
+  isRegisterFailureError,
+} from './services/SyncStatus.service';
 import Mnee from '@mnee/ts-sdk';
 import type { SendMNEEWithData, SendMNEEWithDataResponse } from './services/types/mnee.types';
 
@@ -149,22 +153,50 @@ if (isInServiceWorker) {
   };
 
   const switchAccount = async () => {
-    console.log('[anvil-diag] switchAccount: destroy() starting');
     await (await oneSatSPVPromise).destroy();
-    console.log('[anvil-diag] switchAccount: destroyed, re-reading storage');
     chromeStorageService = new ChromeStorageService();
     await chromeStorageService.getAndSetStorage();
-    const { account, selectedAccount } = chromeStorageService.getCurrentAccountObject();
-    console.log('[anvil-diag] switchAccount: post-reload state', {
-      hasAccount: !!account,
-      hasSelectedAccount: !!selectedAccount,
-      isInServiceWorker,
-    });
     oneSatSPVPromise = initOneSatSPV(chromeStorageService, isInServiceWorker);
     await oneSatSPVPromise;
-    console.log('[anvil-diag] switchAccount: re-init complete');
     initNewTxsListener();
   };
+
+  /**
+   * Retry SPV init after a sync-degraded event. Destroys the current
+   * SPV instance, clears the indexer error state, and re-initializes.
+   * Invoked via SYNC_RETRY message from the popup's Retry button.
+   * Same mechanism as switchAccount but without re-reading the
+   * storage (account doesn't change).
+   */
+  const retrySync = async () => {
+    await writeSyncStatus('retrying');
+    try {
+      await (await oneSatSPVPromise).destroy();
+      oneSatSPVPromise = initOneSatSPV(chromeStorageService, isInServiceWorker);
+      await oneSatSPVPromise;
+      await writeSyncStatus('initializing');
+      initNewTxsListener();
+    } catch (err) {
+      console.error('[SyncStatus] retry failed:', err);
+      await writeSyncStatus('degraded');
+    }
+  };
+
+  /**
+   * Service-worker-global unhandled-rejection listener. spv-store's
+   * 1sat-provider throws "Failed to register account" deep inside
+   * Z.sync when the account-scoped indexer endpoint is degraded
+   * (observed 2026-04-22). The throw doesn't surface through any
+   * API we await, so we catch it at the global level and flip the
+   * shared sync-status flag to 'degraded' so the popup can show an
+   * honest banner + retry button.
+   */
+  self.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
+    if (isRegisterFailureError(event.reason)) {
+      console.warn('[SyncStatus] detected register-failed error; flagging degraded');
+      void writeSyncStatus('degraded');
+    }
+  });
 
   const launchPopUp = () => {
     chrome.windows.create(
@@ -268,6 +300,8 @@ if (isInServiceWorker) {
           return processSyncUtxos();
         case YoursEventName.SWITCH_ACCOUNT:
           return switchAccount();
+        case YoursEventName.SYNC_RETRY:
+          return retrySync();
         case YoursEventName.SIGNED_OUT:
           return signOut();
         default:

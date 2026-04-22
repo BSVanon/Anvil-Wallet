@@ -21,6 +21,7 @@ import { FetchingMessage, ImportTrackerMessage, QueueTrackerMessage } from './ho
 import { YoursEventName } from './inject';
 import { ChromeStorageService } from './services/ChromeStorage.service';
 import { sendMessage } from './utils/chromeHelpers';
+import { writeSyncStatus } from './services/SyncStatus.service';
 import { theme } from './theme';
 import { MNEE_DECIMALS, MNEE_ICON_ID, MNEE_SYM, MNEE_TOKEN_ID } from './utils/constants';
 import { MNEEIndexer } from './utils/mneeIndexer';
@@ -98,21 +99,15 @@ export const initOneSatSPV = async (chromeStorageService: ChromeStorageService, 
     syncSources.add('mnee');
   }
 
-  // [anvil-diag] Diagnostic logging for restore-flow UTXO sync failure
-  // (Robert's real Yours seed shows zero balance + no stepper). Tracks
-  // whether sync is actually enabled when SPV initializes. If `!!account`
-  // is false at init time, startSync is forced false and nothing ever
-  // syncs for this SPV instance.
-  console.log('[anvil-diag] initOneSatSPV', {
-    startSyncRequested: startSync,
-    hasAccount: !!account,
-    hasSelectedAccount: !!selectedAccount,
-    ownersCount: owners.size,
-    ownersNonEmpty: [...owners].filter(Boolean).length,
-    willStartSync: startSync && !!account,
-    syncSources: [...syncSources],
-    network,
-  });
+  // Seed the sync-status flag so the popup sees "initializing" on
+  // first open (before any event has fired). If sync has nothing to
+  // do, the banner will stay on "initializing" briefly; the unhandled
+  // rejection handler in background.ts flips it to 'degraded' if
+  // register fails, and registerEventListeners below flips it to
+  // 'healthy' on the first real sync event.
+  if (startSync && !!account) {
+    void writeSyncStatus('initializing');
+  }
 
   const oneSatSPV = await OneSatWebSPV.init(
     selectedAccount || '',
@@ -126,20 +121,22 @@ export const initOneSatSPV = async (chromeStorageService: ChromeStorageService, 
 
   if (!oneSatSPV) throw Error('SPV not initialized!');
 
-  console.log('[anvil-diag] OneSatWebSPV.init resolved', {
-    selectedAccount: selectedAccount || '(none)',
-  });
-
   await registerEventListeners(oneSatSPV, selectedAccount || '', startSync);
 
   return oneSatSPV;
 };
 
 const registerEventListeners = async (oneSatSPV: OneSatWebSPV, selectedAccount: string, startSync: boolean) => {
-  console.log('[anvil-diag] registerEventListeners attached', { startSync, selectedAccount: selectedAccount || '(none)' });
+  // Any real sync event = spv-store is working. Flip the shared sync
+  // status to 'healthy' so the popup banner clears. The unhandled-
+  // rejection listener in background.ts handles the opposite case
+  // (flip to 'degraded' when register throws).
+  const markHealthy = () => {
+    void writeSyncStatus('healthy');
+  };
 
   oneSatSPV.events.on('queueStats', (data: { length: number }) => {
-    console.log('[anvil-diag] queueStats event', data);
+    markHealthy();
     const message: QueueTrackerMessage = { action: YoursEventName.QUEUE_STATUS_UPDATE, data };
     try {
       sendMessage(message);
@@ -148,9 +145,13 @@ const registerEventListeners = async (oneSatSPV: OneSatWebSPV, selectedAccount: 
   });
 
   oneSatSPV.events.on('importing', (data: { tag: string; name: string }) => {
-    console.log('[anvil-diag] importing event', data);
+    markHealthy();
     const message: ImportTrackerMessage = { action: YoursEventName.IMPORT_STATUS_UPDATE, data };
-    message.data.tag === 'wallet' && localStorage.setItem('walletImporting', 'true');
+    // NOTE: the old upstream line `localStorage.setItem('walletImporting',
+    // 'true')` was removed. localStorage is not defined in MV3 service
+    // workers, and the value was anyway redundant with the SyncStatus
+    // signal above. Removing it also fixes the "Error in event handler:
+    // ReferenceError: localStorage is not defined" warning in the SW log.
     try {
       sendMessage(message);
       // eslint-disable-next-line no-empty
@@ -158,7 +159,7 @@ const registerEventListeners = async (oneSatSPV: OneSatWebSPV, selectedAccount: 
   });
 
   oneSatSPV.events.on('fetchingTx', (data: { txid: string }) => {
-    console.log('[anvil-diag] fetchingTx event', data);
+    markHealthy();
     const message: FetchingMessage = { action: YoursEventName.FETCHING_TX_STATUS_UPDATE, data };
     try {
       sendMessage(message);
