@@ -207,4 +207,50 @@ describe('mapGpHistoryToTxLogs', () => {
     expect(logs.length).toBe(1);
     expect(logs[0].txid).toBe('real-tx');
   });
+
+  it('emits a send TxLog when a row has a non-empty spend field', () => {
+    // One output received at address, later spent by another tx.
+    // Expect two TxLogs: receive (positive amount) + send (negative).
+    const logs = mapGpHistoryToTxLogs([
+      row({
+        txid: 'receive-tx',
+        satoshis: 500,
+        spend: 'spend-tx',
+      }),
+    ]);
+    const receive = logs.find((l) => l.txid === 'receive-tx');
+    const send = logs.find((l) => l.txid === 'spend-tx');
+    expect(receive).toBeDefined();
+    expect(send).toBeDefined();
+    expect(receive!.summary?.fund?.amount).toBe(500);
+    expect(send!.summary?.fund?.amount).toBe(-500);
+  });
+
+  it('aggregates multi-input sends across rows into one send TxLog', () => {
+    // Two separate outputs at the address, both spent in the same tx.
+    // The send-side aggregation should sum them into a single
+    // send event with total spent.
+    const logs = mapGpHistoryToTxLogs([
+      row({ txid: 'in-tx-a', satoshis: 300, spend: 'out-tx' }),
+      row({ txid: 'in-tx-b', satoshis: 700, spend: 'out-tx' }),
+    ]);
+    const send = logs.find((l) => l.txid === 'out-tx');
+    expect(send).toBeDefined();
+    expect(send!.summary?.fund?.amount).toBe(-1000);
+  });
+
+  it('does not create a send entry when spend is empty string (still unspent)', () => {
+    const logs = mapGpHistoryToTxLogs([row({ txid: 'tx1', spend: '' })]);
+    expect(logs.length).toBe(1);
+    expect(logs[0].txid).toBe('tx1');
+  });
+
+  it('mempool / height=0 txs sort above confirmed ones (fresh broadcasts at top)', () => {
+    const logs = mapGpHistoryToTxLogs([
+      row({ txid: 'confirmed', height: 944000, idx: '1' }),
+      row({ txid: 'mempool', height: 0, idx: '0' }),
+    ]);
+    expect(logs[0].txid).toBe('mempool');
+    expect(logs[1].txid).toBe('confirmed');
+  });
 });
