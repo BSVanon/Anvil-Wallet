@@ -25,6 +25,7 @@
 import type { Transaction } from '@bsv/sdk';
 import type { SPVStore } from 'spv-store';
 import { getMeshBroadcastHealth } from './meshHealth';
+import { readSyncStatus } from '../services/SyncStatus.service';
 
 export interface BroadcastResult {
   status: 'success' | 'error';
@@ -130,16 +131,32 @@ export async function broadcastMultiSource(
     console.warn(`[broadcast] anvil-mesh failed: ${meshResult.description} — falling back to spv-store`);
   }
 
-  // 2. spv-store (the wallet's existing broadcast with its own internal fallback chain)
-  // When spv-store is sync-degraded (ordinals.1sat.app outage), its
-  // broadcast call can hang indefinitely — internally awaits queues
-  // that never fire. A silent try/catch doesn't save us from a
-  // promise that never resolves. Race against a 10s timeout so the
-  // tx always reaches the woc-direct fallback within human-scale
-  // time instead of leaving the UI spinner forever.
-  const SPV_BROADCAST_TIMEOUT_MS = 10_000;
-  try {
-    const spvPromise = opts.oneSatSPV.broadcast(tx);
+  // 2. spv-store (the wallet's existing broadcast with its own
+  // internal fallback chain). Internally validates the tx by
+  // fetching merkle proofs for its inputs; when SyncStatus is
+  // 'degraded' those proof fetches 500 and validation throws
+  // "Invalid transaction proof" before the tx ever reaches the
+  // actual broadcast endpoint. Skip this rung when we already
+  // know sync is degraded — calling a broadcaster that requires
+  // a local chain-state it doesn't have is pointless and wastes
+  // user wall-clock time.
+  //
+  // When sync is healthy we still prefer spv-store (ordinal-aware
+  // local indexing after broadcast). When degraded, go straight
+  // to WoC direct.
+  const syncStatus = await readSyncStatus();
+  if (syncStatus === 'degraded') {
+    console.warn('[broadcast] skipping spv-store rung — sync degraded, going straight to woc-direct');
+  } else {
+    const SPV_BROADCAST_TIMEOUT_MS = 10_000;
+    // Wrap the spv-store promise so its rejection is never unhandled:
+    // spv-store fires ingest side effects that reject independently
+    // of the broadcast result itself, and those rejections bubble
+    // up as "Uncaught (in promise)" noise in the service-worker log.
+    // Converting reject → resolve-with-sentinel absorbs them cleanly.
+    const spvPromise: Promise<unknown> = opts.oneSatSPV.broadcast(tx).catch((err: unknown) => ({
+      __spvError__: (err as Error)?.message || String(err),
+    }));
     const timeoutPromise = new Promise<'__timeout__'>((resolve) =>
       setTimeout(() => resolve('__timeout__'), SPV_BROADCAST_TIMEOUT_MS),
     );
@@ -147,6 +164,10 @@ export async function broadcastMultiSource(
     if (raced === '__timeout__') {
       console.warn(
         `[broadcast] spv-store hung for ${SPV_BROADCAST_TIMEOUT_MS}ms — falling back to woc-direct`,
+      );
+    } else if (raced && typeof raced === 'object' && '__spvError__' in raced) {
+      console.warn(
+        `[broadcast] spv-store threw: ${(raced as { __spvError__: string }).__spvError__} — falling back to woc-direct`,
       );
     } else {
       const spvResult = raced as { status?: string; description?: string };
@@ -157,8 +178,6 @@ export async function broadcastMultiSource(
       }
       console.warn(`[broadcast] spv-store failed: ${spvResult.description} — falling back to woc-direct`);
     }
-  } catch (err) {
-    console.warn(`[broadcast] spv-store threw: ${(err as Error).message} — falling back to woc-direct`);
   }
 
   // 3. WhatsOnChain direct (last-resort)
