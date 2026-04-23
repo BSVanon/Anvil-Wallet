@@ -51,10 +51,24 @@ export const BroadcastRequest = (props: BroadcastRequestProps) => {
     (async () => {
       if (!request.rawtx || !oneSatSPV || !!txData) return;
       setIsLoading(true);
-      const tx = getTxFromRawTxFormat(request.rawtx, request.format || 'tx');
-      const parsedTx = await oneSatSPV.parseTx(tx);
-      setTxData(parsedTx);
-      setIsLoading(false);
+      try {
+        const tx = getTxFromRawTxFormat(request.rawtx, request.format || 'tx');
+        const parsedTx = await oneSatSPV.parseTx(tx);
+        setTxData(parsedTx);
+      } catch (err) {
+        // oneSatSPV.parseTx internally fetches input merkle proofs
+        // from ordinals.1sat.app. When sync is degraded those proof
+        // endpoints 500 and parseTx throws "Invalid transaction
+        // proof". We used to leave isLoading=true forever → spinner
+        // never clears → user can't confirm the broadcast. Now we
+        // swallow the error, leave txData undefined, and let the
+        // component render the preview without spend/txo summaries
+        // (TxPreview tolerates missing txData). User still sees the
+        // Confirm button and can complete the broadcast.
+        console.warn('[BroadcastRequest] parseTx failed — showing minimal preview:', (err as Error).message);
+      } finally {
+        setIsLoading(false);
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -178,7 +192,7 @@ export const BroadcastRequest = (props: BroadcastRequestProps) => {
       <Show when={isProcessing || isLoading}>
         <PageLoader theme={theme} message={isLoading ? 'Loading request...' : 'Broadcasting transaction...'} />
       </Show>
-      <Show when={!isProcessing && !isLoading && !!request && !!txData}>
+      <Show when={!isProcessing && !isLoading && !!request}>
         <Wrapper>
           <HeaderText theme={theme}>Broadcast Raw Tx</HeaderText>
           <Text theme={theme} style={{ margin: '0.75rem 0', textAlign: 'center' }}>
@@ -194,11 +208,32 @@ export const BroadcastRequest = (props: BroadcastRequestProps) => {
                 onChange={(e) => setPasswordConfirm(e.target.value)}
               />
             </Show>
-            {txData && <TxPreview txData={txData} />}
+            {txData ? (
+              <TxPreview txData={txData} />
+            ) : (
+              // parseTx failed (indexer-degraded → merkle proof fetch
+              // 500). Show a minimal summary so the user isn't blocked
+              // from completing the broadcast.
+              <Text
+                theme={theme}
+                style={{
+                  margin: '0.75rem 0',
+                  textAlign: 'center',
+                  fontSize: '0.75rem',
+                  color: theme.color.global.gray,
+                }}
+              >
+                Preview unavailable — indexer degraded. You can still broadcast.
+              </Text>
+            )}
             <Button
               theme={theme}
               type="primary"
-              label={`Broadcast - ${satsOut > 0 ? satsOut / BSV_DECIMAL_CONVERSION : 0} BSV`}
+              label={
+                txData
+                  ? `Broadcast - ${satsOut > 0 ? satsOut / BSV_DECIMAL_CONVERSION : 0} BSV`
+                  : 'Broadcast'
+              }
               disabled={isProcessing}
               isSubmit
             />
