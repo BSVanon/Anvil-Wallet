@@ -27,7 +27,13 @@ export async function getBlockTimestamp(height: number): Promise<number | undefi
 
   const p = (async () => {
     try {
-      const res = await fetch(`${WOC_BASE}/block/height/${height}/header`);
+      // WhatsOnChain returns the full block (including `time` in
+      // Unix seconds) at /block/height/{height}. There is no
+      // `/header` suffix in the v1 API — that was my original
+      // mistake. The full response is ~several KB; we still cache
+      // it per-height per-session, so N activity rows at the same
+      // height = 1 network call.
+      const res = await fetch(`${WOC_BASE}/block/height/${height}`);
       if (!res.ok) return undefined;
       const data = (await res.json()) as { time?: number };
       if (typeof data?.time !== 'number') return undefined;

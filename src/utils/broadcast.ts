@@ -82,6 +82,23 @@ async function broadcastViaMesh(tx: Transaction): Promise<BroadcastResult | null
   }
 }
 
+/**
+ * Check whether a tx with the given txid already exists on-chain or
+ * in mempool via WoC. Used after broadcast failures to detect the
+ * "already-broadcast" case — a prior attempt succeeded but the UI
+ * didn't know because of a hang, so a retry rebuilds the same tx
+ * and every broadcast rung rejects it as a duplicate. Treating that
+ * as success (rather than error) makes retries idempotent.
+ */
+async function txExistsOnNetwork(txid: string): Promise<boolean> {
+  try {
+    const res = await fetch(`https://api.whatsonchain.com/v1/bsv/main/tx/hash/${txid}`);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function broadcastViaWocDirect(tx: Transaction): Promise<BroadcastResult | null> {
   try {
     const rawHex = tx.toHex();
@@ -149,6 +166,23 @@ export async function broadcastMultiSource(
   if (wocResult && wocResult.status === 'success') {
     console.log(`[broadcast] ${wocResult.description} — ${wocResult.txid}`);
     return wocResult;
+  }
+
+  // Before declaring failure, check whether the tx is already on the
+  // network. If a previous attempt successfully broadcast but the UI
+  // hung (old bug) or a wallet retry rebuilt the same tx, every
+  // broadcast rung will correctly reject it as a duplicate. That's
+  // not a failure — it's a prior success. Treat as success so
+  // retries are idempotent from the user's perspective.
+  const txid = tx.id('hex') as string;
+  const alreadyExists = await txExistsOnNetwork(txid);
+  if (alreadyExists) {
+    console.log(`[broadcast] tx ${txid} already on network — treating retry as success`);
+    return {
+      status: 'success',
+      description: 'tx already broadcast (prior attempt)',
+      txid,
+    };
   }
 
   const chain = [
