@@ -15,6 +15,7 @@ import {
 import { FaTimes, FaChevronDown, FaChevronUp, FaLink, FaTag } from 'react-icons/fa'; // Import FaTag
 import { TxLog } from 'spv-store';
 import { mapGpHistoryToTxLogs } from '../utils/providerHelper';
+import { getBlockTimestamps, formatBlockTime } from '../utils/blockTime';
 import { Button } from './Button';
 import bsvCoin from '../assets/bsv-coin.svg';
 import lock from '../assets/lock.svg';
@@ -141,6 +142,7 @@ export const TxHistory = (props: TxHistoryProps) => {
   const itemsPerPage = 25;
   const { gorillaPoolService, chromeStorageService, keysService } = useServiceContext();
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+  const [blockTimes, setBlockTimes] = useState<Map<number, number>>(new Map());
   const isTestnet = chromeStorageService.getNetwork() === NetWork.Testnet;
 
   const tagPriorityOrder: Tag[] = ['list', 'bsv21', 'bsv20', 'origin', 'lock', 'fund']; // The order of these tags will determine the order of the icons and which is prioritized
@@ -185,6 +187,23 @@ export const TxHistory = (props: TxHistoryProps) => {
 
     fetchData();
   }, [oneSatSPV, keysService, gorillaPoolService]);
+
+  // Resolve block timestamps for every unique height in the data
+  // set. Lazy + cached per-session by blockTime.ts.
+  useEffect(() => {
+    if (!data || data.length === 0) return;
+    const heights = data
+      .map((t) => Number(t.height ?? 0))
+      .filter((h) => h > 0);
+    if (heights.length === 0) return;
+    let cancelled = false;
+    getBlockTimestamps(heights).then((map) => {
+      if (!cancelled) setBlockTimes(map);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [data]);
 
   const paginatedData = useMemo(() => {
     const startIndex = (currentPage - 1) * itemsPerPage;
@@ -368,6 +387,10 @@ export const TxHistory = (props: TxHistoryProps) => {
                             }}
                           >
                             {getDescriptionText(key, value.amount ?? 0)}
+                            {' · '}
+                            {formatBlockTime(
+                              t.height > 0 ? blockTimes.get(t.height) : undefined,
+                            )}
                           </Text>
                         </TickerTextWrapper>
                       </IconNameWrapper>

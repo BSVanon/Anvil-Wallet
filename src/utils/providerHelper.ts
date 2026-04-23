@@ -172,18 +172,55 @@ export function mapGpHistoryToTxLogs(rows: GpOrdinalRow[]): TxLog[] {
   // Produce TxLog entries. Sorted descending by height then idx.
   // Zero-height txs (mempool / unknown) sort to the top — fresh
   // sends show up immediately after broadcast.
+  //
+  // Re-walk the rows one more time to pick up bsv20 / bsv21 token
+  // metadata per tx — needed so MNEE (and any BSV-21 transfer)
+  // shows with the token icon / name instead of a generic BSV
+  // entry. GP surfaces token info on both the receive side
+  // (row.data.bsv20) and the origin side (row.origin.data.bsv20);
+  // either is good enough for the tag.
+  const tokenByTxid = new Map<string, { id?: string; icon?: string; sym?: string }>();
+  for (const row of rows) {
+    if (!row?.txid) continue;
+    const bsv20 = row.data?.bsv20 || row.origin?.data?.bsv20;
+    if (bsv20?.id) {
+      tokenByTxid.set(row.txid, { id: bsv20.id, icon: bsv20.icon, sym: bsv20.sym });
+    }
+    if (row.spend && bsv20?.id) {
+      tokenByTxid.set(row.spend, { id: bsv20.id, icon: bsv20.icon, sym: bsv20.sym });
+    }
+  }
+
   const logs: TxLog[] = [];
   for (const agg of byTxid.values()) {
+    const token = tokenByTxid.get(agg.txid);
+    let summary: Record<string, unknown>;
+    if (token) {
+      // BSV-21 token transfer (MNEE + other cosigned / plain BSV-21).
+      // The UI's tagPriorityOrder includes 'bsv21' ahead of 'origin'
+      // so this takes precedence in the icon/header selection.
+      summary = {
+        bsv21: {
+          id: token.id,
+          icon: token.icon,
+          // amount = net sats moved; for tokens the "satoshis" value
+          // is the 1-sat ordinal output, so amt displayed here is
+          // just the number of inscription outputs the user received/sent
+          // (roughly a count of token-transfer events at the address).
+          amount: agg.totalSats,
+        },
+      };
+    } else if (agg.hasOrdinal) {
+      summary = { origin: { amount: agg.totalSats } };
+    } else {
+      summary = { fund: { amount: agg.totalSats } };
+    }
     const log = {
       txid: agg.txid,
       height: agg.height,
       idx: agg.idx,
       source: 'gorillapool-fallback',
-      summary: {
-        ...(agg.hasOrdinal
-          ? { origin: { amount: agg.totalSats } }
-          : { fund: { amount: agg.totalSats } }),
-      },
+      summary,
     } as unknown as TxLog;
     logs.push(log);
   }

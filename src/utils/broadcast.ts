@@ -114,14 +114,32 @@ export async function broadcastMultiSource(
   }
 
   // 2. spv-store (the wallet's existing broadcast with its own internal fallback chain)
+  // When spv-store is sync-degraded (ordinals.1sat.app outage), its
+  // broadcast call can hang indefinitely — internally awaits queues
+  // that never fire. A silent try/catch doesn't save us from a
+  // promise that never resolves. Race against a 10s timeout so the
+  // tx always reaches the woc-direct fallback within human-scale
+  // time instead of leaving the UI spinner forever.
+  const SPV_BROADCAST_TIMEOUT_MS = 10_000;
   try {
-    const spvResult = (await opts.oneSatSPV.broadcast(tx)) as { status?: string; description?: string };
-    if (spvResult.status !== 'error') {
-      const txid = tx.id('hex') as string;
-      console.log(`[broadcast] via spv-store — ${txid}`);
-      return { status: 'success', description: 'broadcast via spv-store', txid };
+    const spvPromise = opts.oneSatSPV.broadcast(tx);
+    const timeoutPromise = new Promise<'__timeout__'>((resolve) =>
+      setTimeout(() => resolve('__timeout__'), SPV_BROADCAST_TIMEOUT_MS),
+    );
+    const raced = await Promise.race([spvPromise, timeoutPromise]);
+    if (raced === '__timeout__') {
+      console.warn(
+        `[broadcast] spv-store hung for ${SPV_BROADCAST_TIMEOUT_MS}ms — falling back to woc-direct`,
+      );
+    } else {
+      const spvResult = raced as { status?: string; description?: string };
+      if (spvResult.status !== 'error') {
+        const txid = tx.id('hex') as string;
+        console.log(`[broadcast] via spv-store — ${txid}`);
+        return { status: 'success', description: 'broadcast via spv-store', txid };
+      }
+      console.warn(`[broadcast] spv-store failed: ${spvResult.description} — falling back to woc-direct`);
     }
-    console.warn(`[broadcast] spv-store failed: ${spvResult.description} — falling back to woc-direct`);
   } catch (err) {
     console.warn(`[broadcast] spv-store threw: ${(err as Error).message} — falling back to woc-direct`);
   }
