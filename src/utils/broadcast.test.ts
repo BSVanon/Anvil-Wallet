@@ -297,6 +297,28 @@ describe('broadcastMultiSource fail-closed contract', () => {
     });
   });
 
+  describe('spv-store timeout branch', () => {
+    // Real-timer test of the 10s spv-store hang escape. Takes ~10s wall-time.
+    // The contract: when spv-store never resolves and never rejects (e.g.
+    // 1Sat indexer half-hangs), broadcastMultiSource must time out and
+    // fall through to WoC-direct rather than the user waiting forever.
+    it('falls through to WoC when spv-store hangs past 10s', async () => {
+      const spvBroadcast = jest.fn(() => new Promise(() => {})); // never resolves
+      const wocTxid = 'e'.repeat(64);
+      global.fetch = jest.fn(async (url: string) => {
+        if (url.includes('/tx/raw')) return { ok: true, status: 200, text: async () => `"${wocTxid}"`, json: async () => ({}) };
+        return { ok: false, status: 404, text: async () => '', json: async () => ({}) };
+      }) as unknown as typeof fetch;
+
+      const result = await broadcastMultiSource(makeTx(), { oneSatSPV: makeSpv(spvBroadcast) });
+
+      expect(result.status).toBe('success');
+      expect(result.txid).toBe(wocTxid);
+      expect(result.description).toContain('woc-direct');
+      expect(spvBroadcast).toHaveBeenCalledTimes(1);
+    }, 15_000);
+  });
+
   describe('cache-write isolation', () => {
     it('broadcast still returns success when localStorage is unavailable', async () => {
       // Simulate quota-exceeded by stubbing setItem to throw
