@@ -6,9 +6,8 @@
 
 # Anvil Wallet
 
-A fork of [Yours Wallet](https://github.com/yours-org/yours-wallet)
-with two targeted hardening upgrades. Non-custodial BSV / 1Sat
-Ordinals / MNEE wallet. BRC-100 compatible.
+A hardening fork of [Yours Wallet](https://github.com/yours-org/yours-wallet).
+Non-custodial BSV / 1Sat Ordinals / MNEE wallet. BRC-100 compatible.
 
 ## What's the same as upstream Yours Wallet
 
@@ -18,46 +17,66 @@ MNEE integration, multi-account, UI screens. See [LICENSE.md](LICENSE.md) —
 MIT, preserved from upstream; copyright for the base wallet remains
 with Daniel Wagner and David Case.
 
-## The Two Upgrades
+## What Anvil Wallet adds
 
-### 1. Security — `axios` removed
+The fork is scoped to display, broadcast, and multi-source resilience.
+Cryptography, key handling, and signing paths are unchanged.
 
-All HTTP calls use the browser's native `fetch` API. No third-party
-HTTP library in the wallet's dependency tree. Mitigates the 2024
-`axios` supply-chain attack vector by removing the entire attack surface.
+### Funds-safety hardening
 
-> This was also merged upstream via
-> [yours-org PR #300](https://github.com/yours-org/yours-wallet/pull/300),
-> so Anvil Wallet inherits this rather than being the originator.
+- **Fail-closed broadcast** — `broadcastMultiSource` chains
+  Anvil-Mesh → spv-store → WhatsOnChain, with an idempotency check
+  for retries (a tx already on-network is treated as success). If
+  every path fails, the call returns `{ status: 'error' }`; no
+  silent-success.
+- **Ordinal-safe UTXO selection** — fund-UTXO lookups failover
+  spv-store → GorillaPool → WhatsOnChain with a local 1Sat
+  inscription-envelope filter at every tier. Inscribed outputs can
+  never be spent as fungible BSV change.
+- **Per-account + per-network cache namespacing** — display cache
+  and recent-broadcast tracker are keyed by
+  `<address>:<network>`, so account-switching or mainnet/testnet
+  toggling never cross-contaminates state.
+- **Mesh health pre-flight** — skips Anvil-Mesh quickly when it
+  self-reports its broadcast upstream as down.
+- **`axios` removed** — all HTTP calls use native `fetch`.
+  (Also merged upstream via
+  [yours-org PR #300](https://github.com/yours-org/yours-wallet/pull/300);
+  Anvil Wallet inherits this fix rather than originating it.)
 
-### 2. Multi-source chain data
+### Activity + display reliability
 
-Yours Wallet (and forks of it) historically depended on a single pair
-of indexers (`ordinals.1sat.app` + `ordinals.gorillapool.io`). When
-those degrade, the wallet hangs. Anvil Wallet chains through
-additional sources with fail-closed ordinal safety:
+- **Persistent display cache** in `chrome.storage.local` so the
+  popup renders the last known balance + activity instantly on
+  re-open, while live refresh runs in parallel.
+- **4-way Activity merge** — recent broadcasts, GorillaPool history,
+  WhatsOnChain history fallback, and persistent cache combined with
+  height-aware deduplication. Confirmed transactions stay confirmed
+  across reloads; recently-sent transactions appear immediately.
+- **Block-height reconciliation** — Pending rows resolve to their
+  real confirmation height on the next refresh, even when the
+  primary indexer is degraded.
+- **BSV-21 token auto-detection** — new tokens received in the
+  user's BSV-21 inventory are surfaced automatically; user-removed
+  tokens stay removed (sticky `seenTokens` curation).
+- **Self-contained icons** — generic token / NFT placeholders
+  shipped as inline SVG. No third-party CDN dependency.
 
-- **Fund UTXO lookup**: spv-store primary → WhatsOnChain fallback,
-  with a local 1Sat inscription-envelope filter so the fallback path
-  never spends an ordinal as fungible BSV
-- **Broadcast**: Anvil-Mesh → spv-store → WhatsOnChain
-- **Mesh health pre-flight**: skips Anvil-Mesh quickly when it
-  self-reports its broadcast upstream as down
+### Provider + UX
 
-All three paths are opt-out by default — if you don't configure
-Anvil-Mesh, they fall through silently to spv-store, identical to
-upstream behavior.
-
-## Minor additions
-
-- **Theme**: renamed from "Yours" to "Anvil" in the manifest + theme file
-- **GetSignaturesRequest timeout**: the sign popup no longer deadlocks
-  when the 1Sat indexer is degraded (6-second timeout + minimal
-  preview fallback)
-- **`sendMNEEWithData` provider extension**: lets a connected dApp
+- **`sendMNEEWithData` provider extension** — connected dApps can
   request a user-half-signed MNEE transfer with optional OP_RETURN
-  data, useful for AVOS-style oracle-attested swaps. Additive;
-  existing `sendMNEE` flow unchanged.
+  data, useful for oracle-attested swap flows. Additive; existing
+  `sendMNEE` flow unchanged.
+- **`GetSignaturesRequest` timeout** — the sign popup no longer
+  deadlocks when the 1Sat indexer is degraded (6-second timeout
+  with minimal preview fallback).
+- **Theme** — renamed from "Yours" to "Anvil" in the manifest +
+  theme file.
+
+All Anvil-specific behavior is opt-out by default — without
+Anvil-Mesh configuration the broadcast chain falls through to
+spv-store + WhatsOnChain, identical in shape to upstream.
 
 ## Install
 
@@ -83,7 +102,7 @@ To pull updates from `yours-org/yours-wallet` when upstream ships:
 
 ```bash
 git fetch upstream
-git rebase upstream/main    # replays the 7 Anvil patches on top of new upstream
+git rebase upstream/main    # replays Anvil's hardening commits on top of new upstream
 ```
 
 Or use the "Sync fork" button in the GitHub UI.
