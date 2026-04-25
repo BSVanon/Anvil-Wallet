@@ -199,7 +199,7 @@ export class OrdinalService {
       await tx.fee(feeModel);
       await tx.sign();
 
-      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV });
+      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV, chromeStorageService: this.chromeStorageService });
       if (response?.txid) {
         return { txid: response.txid };
       }
@@ -280,7 +280,7 @@ export class OrdinalService {
         changeAddress: keys.walletAddress,
       });
 
-      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV });
+      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV, chromeStorageService: this.chromeStorageService });
       if (response?.txid) {
         return { txid: response.txid };
       }
@@ -357,7 +357,7 @@ export class OrdinalService {
         tokenChangeAddress: keys.ordAddress,
       });
 
-      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV });
+      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV, chromeStorageService: this.chromeStorageService });
       if (response?.txid) {
         return { txid: response.txid, rawTx: tx.toHex() };
       }
@@ -419,7 +419,7 @@ export class OrdinalService {
         ],
       });
 
-      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV });
+      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV, chromeStorageService: this.chromeStorageService });
       if (response?.txid) {
         return { txid: response.txid };
       }
@@ -478,7 +478,7 @@ export class OrdinalService {
         ],
       });
 
-      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV });
+      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV, chromeStorageService: this.chromeStorageService });
       if (response?.txid) {
         return { txid: response.txid };
       }
@@ -591,7 +591,7 @@ export class OrdinalService {
         tx = res.tx;
       }
 
-      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV });
+      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV, chromeStorageService: this.chromeStorageService });
       if (response?.txid) {
         return { txid: response.txid };
       }

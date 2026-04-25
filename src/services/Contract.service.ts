@@ -16,11 +16,13 @@ import { LockTemplate } from 'spv-store';
 import { broadcastMultiSource } from '../utils/broadcast';
 import { getTxWithFallback } from '../utils/txFetch';
 import { WhatsOnChainService } from './WhatsOnChain.service';
+import type { ChromeStorageService } from './ChromeStorage.service';
 export class ContractService {
   constructor(
     private readonly keysService: KeysService,
     private readonly oneSatSPV: SPVStore,
     private readonly wocService: WhatsOnChainService,
+    private readonly chromeStorageService: ChromeStorageService,
   ) {}
 
   getSignatures = async (
@@ -151,7 +153,7 @@ export class ContractService {
 
       await tx.fee(new SatoshisPerKilobyte(FEE_PER_KB));
       await tx.sign();
-      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV });
+      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV, chromeStorageService: this.chromeStorageService });
       if (response?.txid) {
         return { txid: response.txid };
       }

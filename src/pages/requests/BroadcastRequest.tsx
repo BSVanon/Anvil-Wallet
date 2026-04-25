@@ -150,7 +150,7 @@ export const BroadcastRequest = (props: BroadcastRequestProps) => {
       // chain the wallet uses for its own sends (patch 6). Upstream
       // called oneSatSPV.broadcast directly here, so a dApp call to
       // provider.broadcast() ignored the Anvil-Mesh → WoC fallback.
-      const resp = await broadcastMultiSource(tx, { oneSatSPV });
+      const resp = await broadcastMultiSource(tx, { oneSatSPV, chromeStorageService });
       if (resp.status === 'error' || !resp.txid) {
         addSnackbar('Error broadcasting the raw tx!', 'error');
         setIsProcessing(false);

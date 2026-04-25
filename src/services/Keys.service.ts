@@ -148,7 +148,7 @@ export class KeysService {
       }
       await tx.fee(feeModel);
       await tx.sign();
-      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV });
+      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV, chromeStorageService: this.chromeStorageService });
       if (response.status == 'error') return { error: response.description };
       const txid = tx.id('hex');
       console.log('Change sweep:', txid);
@@ -197,7 +197,7 @@ export class KeysService {
       }
       await tx.fee(feeModel);
       await tx.sign();
-      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV });
+      const response = await broadcastMultiSource(tx, { oneSatSPV: this.oneSatSPV, chromeStorageService: this.chromeStorageService });
       if (response.status == 'error') return { error: response.description };
       const txid = tx.id('hex');
       console.log('Change sweep:', txid);

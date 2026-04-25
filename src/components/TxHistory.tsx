@@ -22,6 +22,24 @@ import lock from '../assets/lock.svg';
 import { Show } from './Show';
 import { NetWork } from 'yours-wallet-provider';
 import { formatNumberWithCommasAndDecimals } from '../utils/format';
+import {
+  mergeReconciliationIntoBlockTimes,
+  mergeIntoReconciliation,
+  buildLogFromRecentBroadcast,
+  mergeUniqueByTxid,
+  sortActivityLogs,
+} from './TxHistory.merge';
+import {
+  listRecentBroadcasts,
+  recentBroadcastsKey,
+  RECENT_BROADCASTS_EVENT,
+} from '../utils/recentBroadcasts';
+import {
+  readDisplayCache,
+  writeActivityCache,
+  writeReconciliationCache,
+  keyFromAccount,
+} from '../services/DisplayCache.service';
 
 const Container = styled.div<WhiteLabelTheme>`
   display: flex;
@@ -140,21 +158,122 @@ export const TxHistory = (props: TxHistoryProps) => {
   const { oneSatSPV } = useServiceContext();
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 25;
-  const { gorillaPoolService, chromeStorageService, keysService } = useServiceContext();
+  const { gorillaPoolService, chromeStorageService, keysService, wocService } = useServiceContext();
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [blockTimes, setBlockTimes] = useState<Map<number, number>>(new Map());
+  // Reconciliation map: txid → WoC-confirmed {height, time} for rows
+  // whose spv-store local TxLog has a stale height=0. Without this,
+  // confirmed txs render as "Pending" forever — the user's natural
+  // reaction is to retry-send, risking a double-spend. See project
+  // memory `project_wallet_stale_pending_bug.md`.
+  const [wocReconciliation, setWocReconciliation] = useState<
+    Map<string, { height: number; time?: number }>
+  >(new Map());
+  const [isReconciling, setIsReconciling] = useState(false);
   const isTestnet = chromeStorageService.getNetwork() === NetWork.Testnet;
 
+  // Codex 603d74df fix: namespace cache keys by (account, network).
+  // Recompute per call site rather than memoize — chromeStorageService
+  // is a stable singleton and the read is synchronous + cheap, while
+  // memoization would risk staleness across account-switch.
+  const deriveKeys = (): { cacheKey: string | undefined; broadcastsKey: string | undefined } => {
+    try {
+      const obj = chromeStorageService.getCurrentAccountObject();
+      const network = chromeStorageService.getNetwork();
+      return {
+        cacheKey: keyFromAccount(obj?.selectedAccount, network),
+        broadcastsKey: recentBroadcastsKey(obj?.selectedAccount, network),
+      };
+    } catch {
+      return { cacheKey: undefined, broadcastsKey: undefined };
+    }
+  };
+
   const tagPriorityOrder: Tag[] = ['list', 'bsv21', 'bsv20', 'origin', 'lock', 'fund']; // The order of these tags will determine the order of the icons and which is prioritized
+
+  // Re-trigger fetchData when local broadcast cache changes (e.g. user
+  // just sent a tx — see Phase 2 P2.2). Bumping this counter is the
+  // signal; the actual cache read happens inside fetchData.
+  const [recentBroadcastsTick, setRecentBroadcastsTick] = useState(0);
+  useEffect(() => {
+    const handler = () => setRecentBroadcastsTick((n) => n + 1);
+    window.addEventListener(RECENT_BROADCASTS_EVENT, handler);
+    return () => window.removeEventListener(RECENT_BROADCASTS_EVENT, handler);
+  }, []);
+
+  // Phase 2.5: seed the Activity list from the persistent display
+  // cache on mount so reopening the popup doesn't blank the list
+  // while spv-store / GP / WoC reconcile in the background. This
+  // closes the "order changes / Pending flickers between opens"
+  // bug Robert reported on 2026-04-25.
+  //
+  // Also seed wocReconciliation + blockTimes from cache (Phase 2.5
+  // hotfix #10): without these, every popup mount re-runs WoC
+  // tx-status lookups for every Pending row, causing visible
+  // Pending → date flicker as each fetch resolves. Cached lookups
+  // mean known confirmed rows render with their resolved height
+  // instantly — no per-mount per-tx network round-trip.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { cacheKey } = deriveKeys();
+      const cache = await readDisplayCache(cacheKey);
+      if (cancelled) return;
+      if (cache.activity?.logs?.length) {
+        // Sort on seed too — older cache writes may have used the
+        // pre-stable-sort path. Always render in deterministic order.
+        setData(sortActivityLogs(cache.activity.logs));
+      }
+      if (cache.reconciliation) {
+        if (cache.reconciliation.wocByTxid.size > 0) {
+          setWocReconciliation(cache.reconciliation.wocByTxid);
+        }
+        if (cache.reconciliation.blockTimes.size > 0) {
+          setBlockTimes(cache.reconciliation.blockTimes);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const fetchData = async () => {
       if (!oneSatSPV) return;
+
+      const { cacheKey, broadcastsKey } = deriveKeys();
+
+      // Local recent-broadcast cache — anything the wallet itself
+      // broadcast in the last 7 days. Used to bridge the GP-indexer
+      // lag window between broadcast success and the SPENT side
+      // appearing in GP's address-history rows.
+      const recents = listRecentBroadcasts(broadcastsKey);
+      const recentLogs = recents.map(buildLogFromRecentBroadcast);
+
+      // Read the persistent cache so it can be part of the merge.
+      // This is critical: without it, a fresh fetch that returns
+      // FEWER rows or rows with LOWER heights than the cache had
+      // would lose data — exactly the "order shuffles + Pending
+      // flicker + rows disappear" pattern Robert reported in
+      // 2026-04-25 click-test. The merge below uses height-aware
+      // semantics so cached confirmed rows are never regressed.
+      const cache = await readDisplayCache(cacheKey);
+      const cachedLogs = cache.activity?.logs ?? [];
+
       // Tier 1: spv-store local tx log.
       try {
         const tsx = await oneSatSPV.getRecentTxs();
         if (tsx && tsx.length > 0) {
-          setData(tsx);
+          // 3-way union: spv-store fresh ∪ recent broadcasts ∪ cache.
+          // mergeUniqueByTxid is height-aware: for any duplicate
+          // txid, keep the row with the higher height.
+          let merged = mergeUniqueByTxid(tsx, recentLogs);
+          merged = mergeUniqueByTxid(merged, cachedLogs);
+          merged = sortActivityLogs(merged);
+          setData(merged);
+          void writeActivityCache(cacheKey, merged);
           return;
         }
       } catch (error) {
@@ -163,7 +282,14 @@ export const TxHistory = (props: TxHistoryProps) => {
 
       // Tier 2: GorillaPool address history. Display-only —
       // shows receive events across the user's three addresses.
-      if (!keysService || !gorillaPoolService) return;
+      if (!keysService || !gorillaPoolService) {
+        // No GP either — at least serve cache + recents so user
+        // doesn't see blank UI when both indexers fail.
+        const fallback = sortActivityLogs(mergeUniqueByTxid(cachedLogs, recentLogs));
+        if (fallback.length > 0) setData(fallback);
+        else setData(sortActivityLogs(recentLogs));
+        return;
+      }
       try {
         const addresses = [
           keysService.bsvAddress,
@@ -179,17 +305,75 @@ export const TxHistory = (props: TxHistoryProps) => {
         if (logs.length > 0) {
           console.warn(`[TxHistory] GorillaPool fallback returned ${logs.length} tx(s)`);
         }
-        setData(logs);
+
+        // Phase 2.5 hotfix #11: WoC tier-3 history fallback. GP's
+        // address-history endpoint lags on incoming receives; WoC
+        // catches what GP misses (Robert click-test 2026-04-25: a
+        // BSV self-send didn't appear in Activity until this fix).
+        // We only fetch the txid+height pairs; reconciliation
+        // resolves block-time, and recent-broadcasts contributes
+        // amount info for sends. Receives without amount info show
+        // as $0 placeholder until spv-store catches up — better
+        // than not appearing at all.
+        const wocLogs: TxLog[] = [];
+        if (wocService) {
+          const allWocRows = (
+            await Promise.all(addresses.map((addr) => wocService.getAddressHistory(addr)))
+          ).flat();
+          // Dedup by txid; build a minimal TxLog per entry.
+          const seen = new Set<string>();
+          for (const row of allWocRows) {
+            if (!row?.tx_hash || seen.has(row.tx_hash)) continue;
+            seen.add(row.tx_hash);
+            wocLogs.push({
+              txid: row.tx_hash,
+              height: typeof row.height === 'number' ? row.height : 0,
+              idx: 0,
+              source: 'woc-fallback',
+              summary: { fund: { amount: 0 } },
+            } as unknown as TxLog);
+          }
+          if (wocLogs.length > 0) {
+            console.warn(
+              `[TxHistory] WoC tier-3 fallback returned ${wocLogs.length} tx(s)`,
+            );
+          }
+        }
+
+        // 4-way union: GP ∪ recent broadcasts ∪ cache ∪ WoC.
+        // Order of merges matters only for tie-break on equal height
+        // (primary wins). GP first because its summary is richest.
+        let merged = mergeUniqueByTxid(logs, recentLogs);
+        merged = mergeUniqueByTxid(merged, cachedLogs);
+        merged = mergeUniqueByTxid(merged, wocLogs);
+        merged = sortActivityLogs(merged);
+        setData(merged);
+        void writeActivityCache(cacheKey, merged);
       } catch (error) {
         console.error('[TxHistory] GorillaPool fallback error:', error);
+        // Same fail-safe as the no-GP branch — show cache + recents
+        // so user isn't left blank when fetching errors out.
+        const fallback = sortActivityLogs(mergeUniqueByTxid(cachedLogs, recentLogs));
+        if (fallback.length > 0) setData(fallback);
+        else setData(sortActivityLogs(recentLogs));
       }
     };
 
     fetchData();
-  }, [oneSatSPV, keysService, gorillaPoolService]);
+    // Codex 603d74df drift fix: include wocService in deps so the
+    // exhaustive-deps lint warning clears AND so account-switch
+    // (which re-binds the service) triggers a fresh fetch with the
+    // correct cache key. `deriveKeys` is a stable closure over
+    // chromeStorageService (also stable for the component lifetime),
+    // so omitting it from deps is intentional.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [oneSatSPV, keysService, gorillaPoolService, wocService, recentBroadcastsTick]);
 
   // Resolve block timestamps for every unique height in the data
-  // set. Lazy + cached per-session by blockTime.ts.
+  // set. Lazy + cached per-session by blockTime.ts. Merges into the
+  // latest committed map via a functional updater so it doesn't
+  // clobber entries the reconciliation effect (below) may have
+  // committed first (Codex review fa8341064b38959a).
   useEffect(() => {
     if (!data || data.length === 0) return;
     const heights = data
@@ -197,13 +381,138 @@ export const TxHistory = (props: TxHistoryProps) => {
       .filter((h) => h > 0);
     if (heights.length === 0) return;
     let cancelled = false;
-    getBlockTimestamps(heights).then((map) => {
-      if (!cancelled) setBlockTimes(map);
+    getBlockTimestamps(heights).then((fetched) => {
+      if (cancelled) return;
+      setBlockTimes((prev) => {
+        const next = new Map(prev);
+        for (const [h, t] of fetched) next.set(h, t);
+        return next;
+      });
     });
     return () => {
       cancelled = true;
     };
   }, [data]);
+
+  // Reconcile stale-Pending rows against WoC. Triggers on every data
+  // set where any row has `height <= 0`; queries WoC /tx/hash/{txid}
+  // in parallel and caches confirmed heights/times per-txid per-session.
+  // Re-running on the same data set is idempotent — we skip txids
+  // already in the reconciliation map.
+  useEffect(() => {
+    if (!data || data.length === 0 || !wocService) return;
+    const stale = data
+      .filter((t) => !t.height || t.height <= 0)
+      .filter((t) => !wocReconciliation.has(t.txid));
+    // Phase 2.5 final-polish: also reconcile WoC tier-3 rows that
+    // came in with summary {fund:{amount:0}} placeholder, so we can
+    // populate a real amount via WoC tx-vout sum at user's addresses.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tier3NoAmount = data.filter((t: any) =>
+      t.source === 'woc-fallback' &&
+      ((t.summary?.fund?.amount ?? 0) === 0) &&
+      !wocReconciliation.has(t.txid),
+    );
+    const toReconcile = [...stale, ...tier3NoAmount.filter((t) => !stale.includes(t))];
+    if (toReconcile.length === 0) return;
+    let cancelled = false;
+    setIsReconciling(true);
+    (async () => {
+      // Fetch in parallel but bounded — a fresh visit to a page with
+      // 25 "Pending" rows would otherwise hammer WoC. 6-at-a-time is
+      // conservative and matches WoC's public rate limits.
+      const BATCH = 6;
+      const additions: Array<[string, { height: number; time?: number }]> = [];
+      const amountAdditions: Array<[string, number]> = [];
+      const userAddresses = [
+        keysService?.bsvAddress,
+        keysService?.ordAddress,
+        keysService?.identityAddress,
+      ].filter(Boolean) as string[];
+      for (let i = 0; i < toReconcile.length; i += BATCH) {
+        if (cancelled) return;
+        const chunk = toReconcile.slice(i, i + BATCH);
+        const results = await Promise.all(
+          chunk.map((t) => wocService.getTxStatus(t.txid, userAddresses)),
+        );
+        for (let j = 0; j < chunk.length; j++) {
+          const status = results[j];
+          if (status?.confirmed && status.blockHeight) {
+            additions.push([
+              chunk[j].txid,
+              { height: status.blockHeight, time: status.blockTime },
+            ]);
+          }
+          if (status?.userOutputSats !== undefined && status.userOutputSats > 0) {
+            amountAdditions.push([chunk[j].txid, status.userOutputSats]);
+          }
+        }
+      }
+      if (cancelled) return;
+      if (additions.length > 0) {
+        // Functional updates only — the height-loader effect can resolve
+        // either before or after this batch finishes, and reading either
+        // map from closure scope risks stomping the other effect's writes
+        // (Codex review fa8341064b38959a). Always merge into the latest
+        // committed state.
+        setWocReconciliation((prev) => mergeIntoReconciliation(prev, additions));
+        // Prime the blockTimes cache so reconciled rows use the same
+        // formatBlockTime path as natively-confirmed rows. Same race
+        // sensitivity — go through the functional updater.
+        setBlockTimes((prev) => mergeReconciliationIntoBlockTimes(prev, additions));
+      }
+      // Patch each row's summary.fund.amount in-place for tier-3 rows
+      // that we just enriched. setData with the same array reference
+      // wouldn't re-render, so we rebuild and re-sort.
+      if (amountAdditions.length > 0) {
+        const amountByTxid = new Map(amountAdditions);
+        setData((prev) => {
+          if (!prev) return prev;
+          let mutated = false;
+          const next = prev.map((row) => {
+            const sats = amountByTxid.get(row.txid);
+            if (sats === undefined) return row;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const fund = (row.summary as any)?.fund;
+            if (!fund || fund.amount !== 0) return row;
+            mutated = true;
+            return {
+              ...row,
+              summary: {
+                ...row.summary,
+                fund: { ...fund, amount: sats },
+              },
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            } as any;
+          });
+          return mutated ? next : prev;
+        });
+      }
+    })()
+      .catch(() => {
+        /* WoC unreachable — rows just stay as "Pending" until next open */
+      })
+      .finally(() => {
+        if (!cancelled) setIsReconciling(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, wocService]);
+
+  // Phase 2.5 hotfix #10: persist reconciliation state whenever it
+  // changes so the next popup mount renders confirmed rows without
+  // re-fetching WoC for each one. Debounce-friendly via the natural
+  // useEffect coalescing — React batches rapid state changes.
+  useEffect(() => {
+    if (wocReconciliation.size === 0 && blockTimes.size === 0) return;
+    const { cacheKey } = deriveKeys();
+    void writeReconciliationCache(cacheKey, { wocByTxid: wocReconciliation, blockTimes });
+    // deriveKeys is a stable closure over chromeStorageService (also
+    // stable). Intentional omission — same rationale as fetchData.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wocReconciliation, blockTimes]);
 
   const paginatedData = useMemo(() => {
     const startIndex = (currentPage - 1) * itemsPerPage;
@@ -330,6 +639,18 @@ export const TxHistory = (props: TxHistoryProps) => {
       <Text style={{ marginTop: '3rem', fontSize: '1.25rem', fontWeight: 700 }} theme={theme}>
         Recent Activity
       </Text>
+      <Show when={isReconciling}>
+        <Text
+          theme={theme}
+          style={{
+            fontSize: '0.7rem',
+            color: theme.color.global.gray,
+            margin: '0.25rem 0 0.25rem 0',
+          }}
+        >
+          Reconciling confirmation status against WhatsOnChain…
+        </Text>
+      </Show>
       {(paginatedData || []).length > 0 ? (
         paginatedData?.map((t) => {
           const summaryEntries = sortEntriesByPriority(
@@ -388,9 +709,17 @@ export const TxHistory = (props: TxHistoryProps) => {
                           >
                             {getDescriptionText(key, value.amount ?? 0)}
                             {' · '}
-                            {formatBlockTime(
-                              t.height > 0 ? blockTimes.get(t.height) : undefined,
-                            )}
+                            {(() => {
+                              // Prefer spv-store's local height when present;
+                              // fall back to WoC reconciliation for rows
+                              // whose local TxLog is stale at height=0.
+                              const localHeight = t.height > 0 ? t.height : 0;
+                              const reconciled = wocReconciliation.get(t.txid);
+                              const effectiveHeight = localHeight > 0 ? localHeight : (reconciled?.height ?? 0);
+                              const effectiveTime =
+                                effectiveHeight > 0 ? blockTimes.get(effectiveHeight) : undefined;
+                              return formatBlockTime(effectiveTime);
+                            })()}
                           </Text>
                         </TickerTextWrapper>
                       </IconNameWrapper>

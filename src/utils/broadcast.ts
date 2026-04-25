@@ -24,8 +24,29 @@
 
 import type { Transaction } from '@bsv/sdk';
 import type { SPVStore } from 'spv-store';
+import type { ChromeStorageService } from '../services/ChromeStorage.service';
 import { getMeshBroadcastHealth } from './meshHealth';
 import { readSyncStatus } from '../services/SyncStatus.service';
+import { recordRecentBroadcast, recentBroadcastsKey } from './recentBroadcasts';
+
+/**
+ * Derive the per-account+network storage key for the
+ * recent-broadcasts cache. Caller supplies ChromeStorageService;
+ * we read selectedAccount + network synchronously off its in-memory
+ * `storage` field (already loaded by the time broadcastMultiSource
+ * runs). Returns undefined if storage is in some weird half-loaded
+ * state — recordRecentBroadcast no-ops cleanly on undefined keys.
+ */
+function deriveBroadcastsKey(svc: ChromeStorageService | undefined): string | undefined {
+  if (!svc) return undefined;
+  try {
+    const obj = svc.getCurrentAccountObject();
+    const network = svc.getNetwork();
+    return recentBroadcastsKey(obj?.selectedAccount, network);
+  } catch {
+    return undefined;
+  }
+}
 
 export interface BroadcastResult {
   status: 'success' | 'error';
@@ -117,14 +138,42 @@ async function broadcastViaWocDirect(tx: Transaction): Promise<BroadcastResult |
   }
 }
 
+/**
+ * Compute net sats movement at the wallet's perspective for a tx.
+ * Negative = sent (wallet's outputs > recipient outputs in this tx).
+ * Best-effort; used only for the Activity-row amount display while the
+ * tx is in the recent-broadcasts cache. Real accounting takes over
+ * once spv-store / GP catches up.
+ */
+function estimateNetSatsForBroadcast(tx: Transaction): number {
+  // Sum of output sats. Per the wallet's own send flow, the change
+  // output goes back to the user, so the total minus change ≈ amount
+  // sent. Without knowing the wallet's own addresses here we just
+  // report the negative absolute total; the Activity view's
+  // reconciliation will refine this once GP indexes the tx.
+  let sum = 0;
+  for (const o of tx.outputs ?? []) {
+    sum += Number(o.satoshis ?? 0);
+  }
+  return -sum;
+}
+
 export async function broadcastMultiSource(
   tx: Transaction,
-  opts: { oneSatSPV: SPVStore },
+  opts: { oneSatSPV: SPVStore; chromeStorageService?: ChromeStorageService },
 ): Promise<BroadcastResult> {
+  const broadcastsKey = deriveBroadcastsKey(opts.chromeStorageService);
   // 1. Anvil-Mesh (if configured)
   const meshResult = await broadcastViaMesh(tx);
   if (meshResult && meshResult.status === 'success') {
     console.log(`[broadcast] ${meshResult.description} — ${meshResult.txid}`);
+    if (meshResult.txid) {
+      recordRecentBroadcast(broadcastsKey, {
+        txid: meshResult.txid,
+        broadcastAt: Date.now(),
+        sats: estimateNetSatsForBroadcast(tx),
+      });
+    }
     return meshResult;
   }
   if (meshResult) {
@@ -174,6 +223,11 @@ export async function broadcastMultiSource(
       if (spvResult.status !== 'error') {
         const txid = tx.id('hex') as string;
         console.log(`[broadcast] via spv-store — ${txid}`);
+        recordRecentBroadcast(broadcastsKey, {
+          txid,
+          broadcastAt: Date.now(),
+          sats: estimateNetSatsForBroadcast(tx),
+        });
         return { status: 'success', description: 'broadcast via spv-store', txid };
       }
       console.warn(`[broadcast] spv-store failed: ${spvResult.description} — falling back to woc-direct`);
@@ -184,6 +238,13 @@ export async function broadcastMultiSource(
   const wocResult = await broadcastViaWocDirect(tx);
   if (wocResult && wocResult.status === 'success') {
     console.log(`[broadcast] ${wocResult.description} — ${wocResult.txid}`);
+    if (wocResult.txid) {
+      recordRecentBroadcast(broadcastsKey, {
+        txid: wocResult.txid,
+        broadcastAt: Date.now(),
+        sats: estimateNetSatsForBroadcast(tx),
+      });
+    }
     return wocResult;
   }
 
@@ -197,6 +258,11 @@ export async function broadcastMultiSource(
   const alreadyExists = await txExistsOnNetwork(txid);
   if (alreadyExists) {
     console.log(`[broadcast] tx ${txid} already on network — treating retry as success`);
+    recordRecentBroadcast(broadcastsKey, {
+      txid,
+      broadcastAt: Date.now(),
+      sats: estimateNetSatsForBroadcast(tx),
+    });
     return {
       status: 'success',
       description: 'tx already broadcast (prior attempt)',

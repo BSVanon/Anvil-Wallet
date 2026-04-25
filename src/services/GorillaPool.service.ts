@@ -174,6 +174,38 @@ export class GorillaPoolService {
     return result;
   };
 
+  /**
+   * Fetch BSV-21 token metadata for a single token id and extract any
+   * icon URL from the deploy tx's inscription JSON. GP's
+   * `/api/bsv20/balance` endpoint returns `icon: null` for many tokens
+   * even when the deploy tx's inscription includes one — the icon
+   * lives at `data.insc.json.icon` in the `/api/bsv20/id/{id}`
+   * response.
+   *
+   * Returns undefined on any network error or absent icon. Robert
+   * click-test 2026-04-25: Pumpkin's icon URL was inscribed in the
+   * deploy tx but never surfaced in Coins because of this gap.
+   */
+  getBsv21IconUrl = async (id: string): Promise<string | undefined> => {
+    if (!id || !/^[0-9a-fA-F]{64}_\d+$/.test(id)) return undefined;
+    try {
+      const network = this.chromeStorageService.getNetwork();
+      const res = await fetch(`${this.getBaseUrl(network)}/api/bsv20/id/${id}`);
+      if (!res.ok) return undefined;
+      const data = (await res.json()) as {
+        icon?: string | null;
+        data?: { insc?: { json?: { icon?: string } } };
+      };
+      const direct = data.icon ?? undefined;
+      if (typeof direct === 'string' && direct.length > 0) return direct;
+      const inscIcon = data.data?.insc?.json?.icon;
+      if (typeof inscIcon === 'string' && inscIcon.length > 0) return inscIcon;
+      return undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
   getBsv20Balances = async (addresses: string[]) => {
     const network = this.chromeStorageService.getNetwork();
     const url = `${this.getBaseUrl(network)}/api/bsv20/balance?addresses=${addresses.join('&addresses=')}`;

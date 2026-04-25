@@ -39,6 +39,8 @@ import { useWeb3RequestContext } from '../hooks/useWeb3RequestContext';
 import { useServiceContext } from '../hooks/useServiceContext';
 import { LockData } from '../services/types/bsv.types';
 import { sendMessage } from '../utils/chromeHelpers';
+import { computeTokenAutoAdd } from '../utils/tokenAutoAdd';
+import { readDisplayCache, writeBsv20sCache, keyFromAccount } from '../services/DisplayCache.service';
 import { YoursEventName } from '../inject';
 import { InWalletBsvResponse } from '../services/types/bsv.types';
 import { useQueueTracker } from '../hooks/useQueueTracker';
@@ -219,7 +221,7 @@ export const BsvWallet = (props: BsvWalletProps) => {
   const [satSendAmount, setSatSendAmount] = useState<number | null>(null);
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const { addSnackbar } = useSnackbar();
-  const { chromeStorageService, keysService, bsvService, ordinalService, oneSatSPV, mneeService } = useServiceContext();
+  const { chromeStorageService, keysService, bsvService, ordinalService, oneSatSPV, mneeService, gorillaPoolService } = useServiceContext();
   const { socialProfile } = useSocialProfile(chromeStorageService);
   const [unlockAttempted, setUnlockAttempted] = useState(false);
   const { connectRequest } = useWeb3RequestContext();
@@ -335,7 +337,77 @@ export const BsvWallet = (props: BsvWalletProps) => {
 
   const getAndSetAccountAndBsv20s = async () => {
     const res = await ordinalService.getBsv20s();
-    setBsv20s(res);
+
+    // Phase 2.5 hotfix (Robert click-test 2026-04-25): only update
+    // bsv20s state + cache when the refresh actually returned data.
+    // spv-store's getBsv20s() returns empty array while ordinal index
+    // sync is incomplete — overwriting our cache-seeded state with []
+    // makes Pumpkin disappear from Coins even though favorites still
+    // contains it (his exact screenshot). Same "no-regress" principle
+    // as the height-aware mergeUniqueByTxid fix.
+    if (res && res.length > 0) {
+      // Phase 2.5 final polish: GP's bsv20/balance returns icon=null
+      // for many tokens even when the deploy tx inscription has one.
+      // Enrich BSV-21 tokens via the metadata endpoint (id-based,
+      // BSV-21 only). Robert click-test 2026-04-25: the prior
+      // version guarded with `if (t.icon || …)` to skip already-set
+      // icons, but cached state with icon=null + a refresh path
+      // that may or may not fire meant Pumpkin's icon never got
+      // populated. Always enrich BSV-21 tokens; GP's HTTP caching
+      // makes repeat hits cheap, and we prefer the freshest URL.
+      const enriched = await Promise.all(
+        res.map(async (t) => {
+          if (!t.id || !/^[0-9a-fA-F]{64}_\d+$/.test(t.id)) return t;
+          const icon = await gorillaPoolService.getBsv21IconUrl(t.id);
+          if (icon) {
+            console.log(`[BsvWallet] enriched icon for ${t.id.slice(0, 12)}…: ${icon}`);
+            return { ...t, icon };
+          }
+          return t;
+        }),
+      );
+      setBsv20s(enriched);
+      // Codex 603d74df BLOCKING: cache key namespaced by
+      // (selectedAccount, network) so a switch doesn't leak holdings
+      // from one account into another's render.
+      const obj = chromeStorageService.getCurrentAccountObject();
+      const cacheKey = keyFromAccount(obj?.selectedAccount, chromeStorageService.getNetwork());
+      void writeBsv20sCache(cacheKey, enriched);
+    }
+
+    // Phase 2 P2.4: auto-add newly-detected tokens to favorites so the
+    // user's actual holdings appear in Coins automatically. Respects
+    // user curation via the `seenTokens` sentinel — once you remove a
+    // token from favorites, the wallet remembers and won't re-add it.
+    const { account: currentAccount } = chromeStorageService.getCurrentAccountObject();
+    if (currentAccount && res?.length) {
+      const detectedTokenIds = res
+        .map((t) => t.id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
+      const auto = computeTokenAutoAdd({
+        detectedTokenIds,
+        favoriteTokens: currentAccount.settings.favoriteTokens ?? [],
+        seenTokens: currentAccount.settings.seenTokens,
+      });
+      if (auto.toAddToFavorites.length > 0 || auto.nextSeenTokens.length !== (currentAccount.settings.seenTokens?.length ?? 0)) {
+        const key: keyof ChromeStorageObject = 'accounts';
+        const update: Partial<ChromeStorageObject['accounts']> = {
+          [keysService.identityAddress]: {
+            ...currentAccount,
+            settings: {
+              ...currentAccount.settings,
+              favoriteTokens: [
+                ...(currentAccount.settings.favoriteTokens ?? []),
+                ...auto.toAddToFavorites,
+              ],
+              seenTokens: auto.nextSeenTokens,
+            },
+          },
+        };
+        await chromeStorageService.updateNested(key, update);
+      }
+    }
+
     setAccount(chromeStorageService.getCurrentAccountObject().account);
   };
 
@@ -344,6 +416,30 @@ export const BsvWallet = (props: BsvWalletProps) => {
     const filtered = bsv20s.filter((t) => t.id && account?.settings?.favoriteTokens?.includes(t.id));
     setFilteredTokens(filtered);
   }, [bsv20s, account]);
+
+  // Phase 2.5: seed bsv20s + account state from the persistent display
+  // cache on mount so the Coins tab renders the user's last-known
+  // tokens instantly. The live refresh below will replace these once
+  // it lands; until then, the user sees Pumpkin (and any others)
+  // immediately rather than blank state.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const obj = chromeStorageService.getCurrentAccountObject();
+      const cacheKey = keyFromAccount(obj?.selectedAccount, chromeStorageService.getNetwork());
+      const cache = await readDisplayCache(cacheKey);
+      if (cancelled) return;
+      if (cache.bsv20s?.entries?.length) {
+        setBsv20s(cache.bsv20s.entries);
+      }
+      const cachedAccount = obj.account;
+      if (cachedAccount && !account) setAccount(cachedAccount);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     (async () => {

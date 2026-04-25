@@ -42,9 +42,28 @@ export const LEGACY_HOSTED_YOURS_IMAGE = 'https://i.ibb.co/zGcthBv/yours-org-lig
 export const YOURS_DEV_WALLET = '1MtzWXQEYGp89bQ9U2nfrnuChFv37j6pV6';
 export const PROVIDER_DOCS_URL = 'https://yours-wallet.gitbook.io/provider-api/intro/introduction';
 export const ONE_SAT_MARKET_URL = 'https://1sat.market/market';
+// Inline SVG data URLs for token / NFT placeholders. Previously these
+// pointed at third-party CDNs (iconduck.com / cdn-icons-png.flaticon.com)
+// but those CDNs went dead — Robert click-test 2026-04-25 showed
+// `Failed to load resource: net::ERR_NAME_NOT_RESOLVED` for the token
+// icon. Inline SVG eliminates the network dependency entirely.
 export const GENERIC_TOKEN_ICON =
-  'https://static-00.iconduck.com/assets.00/generic-cryptocurrency-icon-2048x2029-vzaeox5w.png';
-export const GENERIC_NFT_ICON = 'https://cdn-icons-png.flaticon.com/512/6228/6228867.png';
+  'data:image/svg+xml;utf8,' +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
+      '<circle cx="32" cy="32" r="30" fill="#3a3a3a" stroke="#666" stroke-width="2"/>' +
+      '<text x="32" y="42" font-family="sans-serif" font-size="28" font-weight="700" fill="#ccc" text-anchor="middle">¢</text>' +
+      '</svg>',
+  );
+export const GENERIC_NFT_ICON =
+  'data:image/svg+xml;utf8,' +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
+      '<rect x="6" y="6" width="52" height="52" rx="4" fill="#3a3a3a" stroke="#666" stroke-width="2"/>' +
+      '<path d="M16 44 L26 30 L34 38 L44 22 L52 44 Z" fill="#666"/>' +
+      '<circle cx="22" cy="22" r="3" fill="#999"/>' +
+      '</svg>',
+  );
 export const KNOWN_BURN_ADDRESSES = ['1111111111111111111114oLvT2', '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa'];
 
 // MNEE

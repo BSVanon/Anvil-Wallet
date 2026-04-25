@@ -41,6 +41,117 @@ export class WhatsOnChainService {
     }
   };
 
+  /**
+   * Cross-check a txid's confirmation status directly against WoC.
+   * Used to reconcile stale `TxLog.height = 0` rows whose spv-store
+   * local view missed the confirmation event. WoC's `/tx/hash/{txid}`
+   * returns `blockheight` + `blocktime` for mined txs; mempool txs
+   * omit those fields.
+   *
+   * Phase 2.5 final-polish extension: also returns `userOutputSats`
+   * — the sum of vout values that pay the caller's `userAddresses`.
+   * For a self-send this equals the full tx value (all outputs are
+   * the user's). For pure receives, it's the receive amount. For
+   * sends to others it's the change amount only (input lookup would
+   * be needed for a true net-delta but that's per-input WoC fetches —
+   * deferred). Robert click-test 2026-04-25: WoC tier-3 rows showed
+   * $0 placeholder; this extension lets the Activity tab display a
+   * useful approximation for at least receives + self-sends.
+   *
+   * Returns:
+   *   - `{ confirmed: true, blockHeight, blockTime, userOutputSats? }`
+   *     when the tx is mined and WoC knows about it.
+   *   - `{ confirmed: false, userOutputSats? }` when WoC knows the tx
+   *     but it's unconfirmed.
+   *   - `undefined` when WoC couldn't be reached or the tx is
+   *     genuinely unknown (don't show stale-sync banner in that case).
+   */
+  getTxStatus = async (
+    txid: string,
+    userAddresses?: string[],
+  ): Promise<{
+    confirmed: boolean;
+    blockHeight?: number;
+    blockTime?: number;
+    userOutputSats?: number;
+  } | undefined> => {
+    if (!txid || !/^[0-9a-fA-F]{64}$/.test(txid)) return undefined;
+    try {
+      const network = this.chromeStorageService.getNetwork();
+      const res = await fetch(`${this.getBaseUrl(network)}/tx/hash/${txid}`, {
+        headers: this.config.headers,
+      });
+      if (!res.ok) return undefined;
+      const data = (await res.json()) as {
+        blockheight?: number;
+        blocktime?: number;
+        vout?: Array<{
+          value?: number;
+          scriptPubKey?: { addresses?: string[] };
+        }>;
+      };
+      // Sum vout values whose scriptPubKey.addresses includes any of
+      // the caller's userAddresses. WoC's `value` is BSV (decimal),
+      // convert to sats. Skip if userAddresses not provided.
+      let userOutputSats: number | undefined;
+      if (userAddresses && userAddresses.length > 0 && Array.isArray(data.vout)) {
+        const addrSet = new Set(userAddresses);
+        let sumBsv = 0;
+        for (const vout of data.vout) {
+          const addrs = vout?.scriptPubKey?.addresses ?? [];
+          if (addrs.some((a) => addrSet.has(a))) {
+            sumBsv += Number(vout.value ?? 0);
+          }
+        }
+        if (sumBsv > 0) userOutputSats = Math.round(sumBsv * 1e8);
+      }
+      if (typeof data.blockheight === 'number' && data.blockheight > 0) {
+        return {
+          confirmed: true,
+          blockHeight: data.blockheight,
+          blockTime: typeof data.blocktime === 'number' ? data.blocktime : undefined,
+          userOutputSats,
+        };
+      }
+      return { confirmed: false, userOutputSats };
+    } catch {
+      return undefined;
+    }
+  };
+
+  /**
+   * Tier-3 fallback for Activity history. spv-store register failure
+   * (1sat.app degraded) breaks ordinal/tx-log sync; GP's
+   * /api/txos/address/.../history endpoint lags on incoming receives.
+   * WoC's `/address/{addr}/history` returns confirmed (txid, height)
+   * pairs and is independently operated, so it catches what the other
+   * two miss (Robert click-test 2026-04-25: BSV self-send missing
+   * from Activity even though balance reflected it).
+   *
+   * Returns just txid + height — amount accounting is left to
+   * subsequent enrichment via `getTxStatus` + the WoC reconciliation
+   * effect. UI shows "(amount unknown)" for these rows until
+   * spv-store catches up.
+   */
+  getAddressHistory = async (
+    address: string,
+  ): Promise<Array<{ tx_hash: string; height?: number }>> => {
+    if (!address) return [];
+    try {
+      const network = this.chromeStorageService.getNetwork();
+      const res = await fetch(
+        `${this.getBaseUrl(network)}/address/${address}/history`,
+        { headers: this.config.headers },
+      );
+      if (!res.ok) return [];
+      const data = (await res.json()) as Array<{ tx_hash: string; height?: number }>;
+      if (!Array.isArray(data)) return [];
+      return data;
+    } catch {
+      return [];
+    }
+  };
+
   getRawTxById = async (txid: string): Promise<string | undefined> => {
     try {
       const network = this.chromeStorageService.getNetwork();

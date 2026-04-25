@@ -33,11 +33,17 @@ import {
 } from '../services/SyncStatus.service';
 import { Show } from './Show';
 
-const Banner = styled.div<WhiteLabelTheme & { $color: 'blue' | 'orange' | 'red' }>`
+// Phase 2.5 final: switched from flex-column with absolute-positioned
+// dismiss X to grid layout with the X as a normal flow child. Robert
+// click-test feedback showed the absolute-positioned variant kept
+// disappearing or clipping at popup edges across multiple tries
+// (right side hit scrollbar; left side moved fixed it briefly but
+// then a build apparently lost it entirely). Grid layout puts the X
+// in its own column — predictable, visible, no layout overlap.
+const Banner = styled.div<WhiteLabelTheme & { $color: 'blue' | 'orange' | 'red' | 'green' }>`
   position: fixed;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
+  display: grid;
+  grid-template-columns: 2.4rem 1fr 2.4rem;
   align-items: center;
   top: 0;
   width: 100%;
@@ -46,38 +52,60 @@ const Banner = styled.div<WhiteLabelTheme & { $color: 'blue' | 'orange' | 'red' 
   font-weight: 600;
   background-color: ${({ theme, $color }) => {
     if ($color === 'red') return '#b91c1c';
+    if ($color === 'green') return theme.color.component.queueBannerSynced;
     return theme.color.component.queueBannerSyncing;
   }};
   color: ${({ theme, $color }) => {
     if ($color === 'red') return '#ffffff';
+    if ($color === 'green') return theme.color.component.queueBannerSyncedText;
     return theme.color.component.queueBannerSyncingText;
   }};
-  padding: 0.5rem 2rem 0.5rem 0.5rem;
-  text-align: center;
+  padding: 0.5rem 0.4rem;
   z-index: 1000;
 `;
 
+// Wraps the centered banner content inside the middle grid column.
+const BannerContent = styled.div`
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.15rem;
+  min-width: 0;
+`;
+
+// Dismiss X — normal flow, first column of the banner grid.
+// `justify-self: center` centers it inside the 2.4rem grid column.
 const DismissX = styled.button`
-  position: absolute;
-  top: 0.25rem;
-  right: 0.4rem;
+  justify-self: center;
   width: 1.4rem;
   height: 1.4rem;
   padding: 0;
-  font-size: 1rem;
+  font-size: 0.9rem;
   font-weight: 700;
   line-height: 1;
-  border-radius: 0.25rem;
-  border: none;
-  background-color: transparent;
-  color: inherit;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  background-color: rgba(0, 0, 0, 0.75);
+  color: #ffffff;
   cursor: pointer;
-  opacity: 0.7;
+  opacity: 1;
+  transition: background-color 0.12s ease, transform 0.12s ease;
 
   &:hover {
-    opacity: 1;
-    background-color: rgba(0, 0, 0, 0.15);
+    background-color: rgba(0, 0, 0, 0.9);
+    transform: scale(1.05);
   }
+
+  &:focus-visible {
+    outline: 2px solid #ffffff;
+    outline-offset: 2px;
+  }
+`;
+
+// Empty third grid cell — keeps centered content visually balanced.
+const BannerSpacer = styled.div`
+  width: 100%;
 `;
 
 const RetryButton = styled.button`
@@ -108,8 +136,23 @@ export const QueueBanner = () => {
     useQueueTracker();
 
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('initializing');
+  // Transient "✓ Synced" beat shown for SYNCED_CONFIRM_MS after a
+  // initializing→healthy or retrying→healthy transition. Without
+  // this, sync silently going healthy gives the user no positive
+  // confirmation and they're left wondering whether things worked
+  // (Phase 2 P2.5 — Robert's "Problem B" from upstream Yours).
+  const SYNCED_CONFIRM_MS = 3000;
+  const [showSyncedConfirm, setShowSyncedConfirm] = useState(false);
   useEffect(() => {
-    const unsubscribe = subscribeSyncStatus(setSyncStatus);
+    const unsubscribe = subscribeSyncStatus((next) => {
+      setSyncStatus((prev) => {
+        if (next === 'healthy' && prev !== 'healthy') {
+          setShowSyncedConfirm(true);
+          window.setTimeout(() => setShowSyncedConfirm(false), SYNCED_CONFIRM_MS);
+        }
+        return next;
+      });
+    });
     return unsubscribe;
   }, []);
 
@@ -177,21 +220,24 @@ export const QueueBanner = () => {
         <DismissX onClick={() => setQueueDismissed(true)} aria-label="Dismiss">
           ×
         </DismissX>
-        <span>
-          {importName && importName !== 'Wallet'
-            ? `Importing ${importName}...`
-            : `Syncing ${
-                queueLength ? formatNumberWithCommasAndDecimals(queueLength, 0) : ''
-              } transactions`}
-        </span>
-        <span style={{ fontSize: '0.65rem', fontWeight: 400, opacity: 0.8 }}>
-          You can close the wallet during this process.
-        </span>
-        <Show when={!!fetchingTxid}>
-          <span style={{ fontSize: '0.65rem', fontWeight: 500, opacity: 0.9 }}>
-            {fetchingTxid ? truncate(fetchingTxid, 6, 6) : ''}
+        <BannerContent>
+          <span>
+            {importName && importName !== 'Wallet'
+              ? `Importing ${importName}...`
+              : `Syncing ${
+                  queueLength ? formatNumberWithCommasAndDecimals(queueLength, 0) : ''
+                } transactions`}
           </span>
-        </Show>
+          <span style={{ fontSize: '0.65rem', fontWeight: 400, opacity: 0.8 }}>
+            You can close the wallet during this process.
+          </span>
+          <Show when={!!fetchingTxid}>
+            <span style={{ fontSize: '0.65rem', fontWeight: 500, opacity: 0.9 }}>
+              {fetchingTxid ? truncate(fetchingTxid, 6, 6) : ''}
+            </span>
+          </Show>
+        </BannerContent>
+        <BannerSpacer />
       </Banner>
     );
   }
@@ -202,15 +248,38 @@ export const QueueBanner = () => {
         <DismissX onClick={() => setStatusDismissed(true)} aria-label="Dismiss">
           ×
         </DismissX>
-        <span>{statusDisplay.title}</span>
-        <span style={{ fontSize: '0.65rem', fontWeight: 400, opacity: 0.85 }}>
-          {statusDisplay.subtitle}
-        </span>
-        {statusDisplay.showRetry && (
-          <RetryButton onClick={handleRetry} disabled={retryDisabled}>
-            {retryLabel}
-          </RetryButton>
-        )}
+        <BannerContent>
+          <span>{statusDisplay.title}</span>
+          <span style={{ fontSize: '0.65rem', fontWeight: 400, opacity: 0.85 }}>
+            {statusDisplay.subtitle}
+          </span>
+          {statusDisplay.showRetry && (
+            <RetryButton onClick={handleRetry} disabled={retryDisabled}>
+              {retryLabel}
+            </RetryButton>
+          )}
+        </BannerContent>
+        <BannerSpacer />
+      </Banner>
+    );
+  }
+
+  // Transient "✓ Synced" beat — only fires when we just transitioned
+  // INTO healthy, regardless of any user dismiss state on prior
+  // banners. Auto-hides after SYNCED_CONFIRM_MS.
+  if (showSyncedConfirm && walletReady && syncStatus === 'healthy') {
+    return (
+      <Banner theme={theme} $color="green" data-testid="sync-confirm-banner">
+        <DismissX onClick={() => setShowSyncedConfirm(false)} aria-label="Dismiss">
+          ×
+        </DismissX>
+        <BannerContent>
+          <span>✓ Synced</span>
+          <span style={{ fontSize: '0.65rem', fontWeight: 400, opacity: 0.8 }}>
+            Wallet is up to date.
+          </span>
+        </BannerContent>
+        <BannerSpacer />
       </Banner>
     );
   }

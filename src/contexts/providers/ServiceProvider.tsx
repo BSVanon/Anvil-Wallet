@@ -20,7 +20,7 @@ const initializeServices = async () => {
   const oneSatSPV = await oneSatSPVPromise;
   gorillaPoolService.setLocalFallbackDeps(oneSatSPV, wocService);
   const keysService = new KeysService(chromeStorageService, oneSatSPV, wocService);
-  const contractService = new ContractService(keysService, oneSatSPV, wocService);
+  const contractService = new ContractService(keysService, oneSatSPV, wocService, chromeStorageService);
   const mneeService = new mnee({ environment: 'production', apiKey: MNEE_API_TOKEN });
 
   const bsvService = new BsvService(keysService, wocService, contractService, chromeStorageService, oneSatSPV, gorillaPoolService);

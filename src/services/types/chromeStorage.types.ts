@@ -32,6 +32,14 @@ export type Settings = {
   isPasswordRequired: boolean;
   socialProfile: SocialProfile;
   favoriteTokens: string[];
+  /**
+   * Tokens the wallet has already considered for auto-add to
+   * `favoriteTokens`. Used so that removing a token from favorites
+   * doesn't cause it to be re-added on the next detection cycle. Phase
+   * 2 P2.4 — auto-discover holdings while respecting user curation.
+   * Optional for backward compatibility with pre-P2.4 storage.
+   */
+  seenTokens?: string[];
   customFeeRate: number;
 };
 
