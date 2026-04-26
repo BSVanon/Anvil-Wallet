@@ -6,7 +6,8 @@ import { Bsv20 } from 'yours-wallet-provider';
 import { useServiceContext } from '../hooks/useServiceContext';
 import { useSnackbar } from '../hooks/useSnackbar';
 import { useTheme } from '../hooks/useTheme';
-import { ONE_SAT_MARKET_URL } from '../utils/constants';
+import { GENERIC_TOKEN_ICON, ONE_SAT_MARKET_URL } from '../utils/constants';
+import { resolveIconUrl } from '../utils/tokenIcon';
 import { formatNumberWithCommasAndDecimals } from '../utils/format';
 import { isBSV20v2, normalize, showAmount } from '../utils/ordi';
 import { sleep } from '../utils/sleep';
@@ -153,12 +154,10 @@ export const SendBsv20View = ({ token, onBack }: SendBsv20ViewProps) => {
     <Show when={token !== null}>
       {token ? (
         <ConfirmContent>
-          <Show when={!!token.info.icon && token.info.icon.length > 0}>
-            <TokenIcon
-              style={{ marginBottom: '0.5rem' }}
-              src={`${gorillaPoolService.getBaseUrl(network)}/content/${token.info.icon}`}
-            />
-          </Show>
+          <TokenIcon
+            style={{ marginBottom: '0.5rem' }}
+            src={resolveIconUrl(token.info.icon, gorillaPoolService.getBaseUrl(network)) ?? GENERIC_TOKEN_ICON}
+          />
           <TransferBSV20Header theme={theme}>Send {getTokenName(token.info)}</TransferBSV20Header>
           <BSV20Container>
             <Balance theme={theme} onClick={() => userSelectedAmount(String(Number(token.info.all.confirmed)), token)}>
