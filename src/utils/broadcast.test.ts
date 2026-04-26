@@ -162,7 +162,13 @@ describe('broadcastMultiSource fail-closed contract', () => {
   });
 
   describe('idempotency check', () => {
-    it('treats "tx already on network" as success when all rungs fail', async () => {
+    it('treats "tx already on network" as success via the post-spv-store check when spv-store rejects', async () => {
+      // Same scenario as the original "all rungs fail" test, but the
+      // post-spv-store idempotency short-circuit fires BEFORE WoC is
+      // called, so the success description carries the early-check
+      // string rather than the end-of-function "prior attempt" one.
+      // Behavior contract is the same: idempotent retries return
+      // success, never error.
       const spvBroadcast = jest.fn().mockRejectedValue(new Error('duplicate'));
       global.fetch = jest.fn(async (url: string) => {
         if (url.includes('/tx/raw')) return { ok: false, status: 500, text: async () => 'duplicate', json: async () => ({}) };
@@ -174,7 +180,61 @@ describe('broadcastMultiSource fail-closed contract', () => {
 
       expect(result.status).toBe('success');
       expect(result.txid).toBe(TXID);
+      // Post-spv-store idempotency catches it before the end-of-function check
+      expect(result.description).toContain('post-error idempotency');
+    });
+
+    it('treats "tx already on network" as success via the END-OF-FUNCTION check when sync is degraded (spv-store skipped) and WoC fails', async () => {
+      // When sync='degraded', the spv-store rung is skipped entirely
+      // — no post-spv-store idempotency check fires. WoC then fails.
+      // The end-of-function safety net catches the on-network state
+      // and returns success with the "prior attempt" description.
+      // This is the case the end-of-function check was originally
+      // designed for; preserved as a regression test so it doesn't
+      // get accidentally removed.
+      mockSyncStatus.mockResolvedValue('degraded');
+      const spvBroadcast = jest.fn();
+      global.fetch = jest.fn(async (url: string) => {
+        if (url.includes('/tx/raw')) return { ok: false, status: 500, text: async () => 'duplicate', json: async () => ({}) };
+        if (url.includes('/tx/hash/')) return { ok: true, status: 200, text: async () => '', json: async () => ({}) };
+        return { ok: false, status: 404, text: async () => '', json: async () => ({}) };
+      }) as unknown as typeof fetch;
+
+      const result = await broadcastMultiSource(makeTx(), { oneSatSPV: makeSpv(spvBroadcast) });
+
+      expect(result.status).toBe('success');
+      expect(result.txid).toBe(TXID);
       expect(result.description).toContain('prior attempt');
+      expect(spvBroadcast).not.toHaveBeenCalled();
+    });
+
+    it('returns success without WoC fallback when spv-store rejects but tx is already on-network (degraded indexer false-failure)', async () => {
+      // Robert click-test 2026-04-25: Pumpkin OrdLock listing tx
+      // 3bf1fc63... confirmed at block 946418 even though the wallet
+      // surfaced "broadcast failed". ARC under spv-store accepted the
+      // tx; spv-store's degraded indexer rejected the post-broadcast
+      // ingest. Without this short-circuit, broadcastMultiSource
+      // would waste a WoC roundtrip + still return failure.
+      const spvBroadcast = jest.fn().mockRejectedValue(new Error('register-failed (1Sat indexer degraded)'));
+      const wocPostMock = jest.fn();
+      global.fetch = jest.fn(async (url: string) => {
+        if (url.includes('/tx/hash/')) {
+          return { ok: true, status: 200, text: async () => '', json: async () => ({}) };
+        }
+        if (url.includes('/tx/raw')) {
+          wocPostMock(url);
+          return { ok: false, status: 500, text: async () => 'should not reach woc', json: async () => ({}) };
+        }
+        return { ok: false, status: 404, text: async () => '', json: async () => ({}) };
+      }) as unknown as typeof fetch;
+
+      const result = await broadcastMultiSource(makeTx(), { oneSatSPV: makeSpv(spvBroadcast) });
+
+      expect(result.status).toBe('success');
+      expect(result.txid).toBe(TXID);
+      expect(result.description).toContain('post-error idempotency');
+      // WoC post-broadcast was NOT called — we caught the success early.
+      expect(wocPostMock).not.toHaveBeenCalled();
     });
   });
 

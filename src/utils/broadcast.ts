@@ -212,11 +212,11 @@ export async function broadcastMultiSource(
     const raced = await Promise.race([spvPromise, timeoutPromise]);
     if (raced === '__timeout__') {
       console.warn(
-        `[broadcast] spv-store hung for ${SPV_BROADCAST_TIMEOUT_MS}ms — falling back to woc-direct`,
+        `[broadcast] spv-store hung for ${SPV_BROADCAST_TIMEOUT_MS}ms — checking on-network idempotency before falling back`,
       );
     } else if (raced && typeof raced === 'object' && '__spvError__' in raced) {
       console.warn(
-        `[broadcast] spv-store threw: ${(raced as { __spvError__: string }).__spvError__} — falling back to woc-direct`,
+        `[broadcast] spv-store threw: ${(raced as { __spvError__: string }).__spvError__} — checking on-network idempotency before falling back`,
       );
     } else {
       const spvResult = raced as { status?: string; description?: string };
@@ -230,7 +230,39 @@ export async function broadcastMultiSource(
         });
         return { status: 'success', description: 'broadcast via spv-store', txid };
       }
-      console.warn(`[broadcast] spv-store failed: ${spvResult.description} — falling back to woc-direct`);
+      console.warn(`[broadcast] spv-store failed: ${spvResult.description} — checking on-network idempotency before falling back`);
+    }
+
+    // spv-store reported timeout / threw / status:error. ANY of these can
+    // happen even when ARC underneath ACCEPTED the tx — the indexer's
+    // post-broadcast ingest is what fails (esp. when 1Sat ordinal index
+    // is degraded), but the broadcast itself may have landed.
+    //
+    // Robert click-test 2026-04-25: Pumpkin OrdLock listing tx
+    // 3bf1fc63...784b confirmed on-chain at block 946418 even though
+    // the wallet UI surfaced "broadcast failed". Root cause was this
+    // false-failure: spv-store's degraded indexer rejected, the wallet
+    // fell through to WoC which also reported error (the tx was
+    // already in another node's mempool), and the user got an alarming
+    // failure message for a successful broadcast.
+    //
+    // Fix: idempotency-check the tx against the network BEFORE wasting
+    // a WoC roundtrip. If it's already there, return success right
+    // away. Same idempotency primitive runs at the end of the function
+    // as a final safety net — this just runs it earlier in the chain.
+    const txid = tx.id('hex') as string;
+    if (await txExistsOnNetwork(txid)) {
+      console.log(`[broadcast] tx ${txid} already on network — spv-store rung succeeded under the indexer error`);
+      recordRecentBroadcast(broadcastsKey, {
+        txid,
+        broadcastAt: Date.now(),
+        sats: estimateNetSatsForBroadcast(tx),
+      });
+      return {
+        status: 'success',
+        description: 'broadcast via spv-store (post-error idempotency confirmed on-network)',
+        txid,
+      };
     }
   }
 
