@@ -167,6 +167,7 @@ export const Bsv20TokensList = (props: Bsv20TokensListProps) => {
                                   <AssetRow
                                     animate
                                     balance={Number(showAmount(t.all.confirmed, t.dec))}
+                                    listedBalance={Number(showAmount(t.listed.confirmed, t.dec))}
                                     showPointer={true}
                                     icon={
                                       resolveIconUrl(t.icon, gorillaPoolService.getBaseUrl(network)) ??

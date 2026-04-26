@@ -86,6 +86,14 @@ export type AssetRowProps = {
   animate?: boolean;
   isLock?: boolean;
   nextUnlock?: number;
+  /** When > 0, replaces the "Balance" subtitle with
+   *  "{spendable} spendable, {listedBalance} listed" so users can see
+   *  at a glance how much of their token holdings is locked in OrdLock
+   *  listings and how much is freely transferable. Pumpkin click-test
+   *  2026-04-26: a user with 5 listed and 26 free was confused by
+   *  seeing "Balance: 31" + "Pending tokens cannot be sent" gating —
+   *  this disambiguates. */
+  listedBalance?: number;
   onGetMneeClick?: () => void;
   onClick?: () => void;
 };
@@ -102,6 +110,7 @@ export const AssetRow = (props: AssetRowProps) => {
     isMNEE,
     showPointer,
     onGetMneeClick,
+    listedBalance,
     animate = false,
   } = props;
   const { theme } = useTheme();
@@ -123,7 +132,11 @@ export const AssetRow = (props: AssetRowProps) => {
             {ticker}
           </HeaderText>
           <Text style={{ margin: '0', textAlign: 'left', color: theme.color.global.gray }} theme={theme}>
-            {isLock ? 'Next unlock' : 'Balance'}
+            {isLock
+              ? 'Next unlock'
+              : listedBalance && listedBalance > 0
+                ? `${formatLargeNumber(balance - listedBalance, 3)} spendable, ${formatLargeNumber(listedBalance, 3)} listed`
+                : 'Balance'}
           </Text>
         </TickerTextWrapper>
       </TickerWrapper>
