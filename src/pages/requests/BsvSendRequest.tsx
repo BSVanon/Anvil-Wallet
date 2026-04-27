@@ -221,6 +221,7 @@ export const BsvSendRequest = (props: BsvSendRequestProps) => {
                 theme={theme}
                 placeholder="Enter Wallet Password"
                 type="password"
+                autoFocus
                 value={passwordConfirm}
                 onChange={(e) => setPasswordConfirm(e.target.value)}
               />

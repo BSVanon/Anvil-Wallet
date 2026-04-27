@@ -204,6 +204,7 @@ export const GetSignaturesRequest = (props: GetSignaturesRequestProps) => {
                 theme={theme}
                 placeholder="Enter Wallet Password"
                 type="password"
+                autoFocus
                 onChange={(e) => setPasswordConfirm(e.target.value)}
               />
             </Show>

@@ -167,6 +167,7 @@ export const OrdPurchaseRequest = (props: OrdPurchaseRequestProps) => {
                 theme={theme}
                 placeholder="Password"
                 type="password"
+                autoFocus
                 value={passwordConfirm}
                 onChange={(e) => setPasswordConfirm(e.target.value)}
               />

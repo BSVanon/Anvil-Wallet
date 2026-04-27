@@ -217,6 +217,7 @@ export const GenerateTaggedKeysRequest = (props: GenerateTaggedKeysRequestProps)
                 theme={theme}
                 placeholder="Password"
                 type="password"
+                autoFocus
                 value={passwordConfirm}
                 onChange={(e) => setPasswordConfirm(e.target.value)}
                 style={{ margin: '0.25rem' }}
