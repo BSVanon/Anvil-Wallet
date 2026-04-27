@@ -241,11 +241,24 @@ export class GorillaPoolService {
             pending: BigInt(b.all.pending),
           },
           listed: {
-            confirmed: BigInt(b.all.confirmed),
-            pending: BigInt(b.all.pending),
+            // Bug inherited from Yours: both branches read `b.all` so
+            // `token.listed` ended up identical to `token.all`. With
+            // GP indexing now active, `b.listed` carries real numbers
+            // (e.g. Pumpkin: all=3100, listed=500) and consumers like
+            // OrdLockListingsCard need the genuine listed amount.
+            confirmed: BigInt(b.listed.confirmed),
+            pending: BigInt(b.listed.pending),
           },
         };
       },
+    );
+    console.log(
+      '[GorillaPool] getBsv20Balances →',
+      bsv20List.map((t) => ({
+        sym: t.sym,
+        all: { confirmed: t.all.confirmed.toString(), pending: t.all.pending.toString() },
+        listed: { confirmed: t.listed.confirmed.toString(), pending: t.listed.pending.toString() },
+      })),
     );
 
     return bsv20List;
