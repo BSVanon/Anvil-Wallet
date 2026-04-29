@@ -20,6 +20,8 @@ import { WhiteLabelTheme } from '../theme.types';
 import { getErrorMessage } from '../utils/tools';
 import { useIntersectionObserver } from '../hooks/useIntersectObserver';
 import { truncate } from '../utils/format';
+import { readDisplayCache, keyFromAccount } from '../services/DisplayCache.service';
+import { buildIconOfIndex, lookupIconOf, type IconOf } from '../utils/iconOf';
 
 type Addresses = Record<string, string>;
 
@@ -154,6 +156,10 @@ export const OrdWallet = () => {
   const { addSnackbar, message } = useSnackbar();
   const [ordinals, setOrdinals] = useState<OrdType[]>([]);
   const [from, setFrom] = useState<string>();
+  // Reverse-index keyed by inscription origin outpoint -> { sym, id }
+  // built from the BSV-21 tokens in the user's display cache. Lets us
+  // label icon-NFTs as "Icon for {sym}" instead of "Unknown Name".
+  const [iconOfIndex, setIconOfIndex] = useState<Map<string, IconOf>>(() => new Map());
   const listedOrdinals = ordinals && ordinals.filter((o) => o?.data?.list);
   const myOrdinals = ordinals && ordinals.filter((o) => !o?.data?.list);
   const [useSameAddress, setUseSameAddress] = useState(false);
@@ -230,6 +236,26 @@ export const OrdWallet = () => {
     loadOrdinals();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Build the icon-outpoint -> sym index from the bsv20s display cache.
+  // Reads cache only — BsvWallet refreshes the cache on its own load
+  // path. Re-running on mount keeps the index up to date when the user
+  // navigates between Coins and NFT tabs.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const obj = chromeStorageService.getCurrentAccountObject();
+        const cacheKey = keyFromAccount(obj?.selectedAccount, chromeStorageService.getNetwork());
+        const cache = await readDisplayCache(cacheKey);
+        if (cancelled) return;
+        setIconOfIndex(buildIconOfIndex(cache.bsv20s?.entries));
+      } catch {
+        if (!cancelled) setIconOfIndex(new Map());
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [chromeStorageService]);
 
   const resetSendState = () => {
     setPasswordConfirm('');
@@ -424,6 +450,7 @@ export const OrdWallet = () => {
           url={`${gorillaPoolService.getBaseUrl(network)}/content/${ordinal.origin?.outpoint}?outpoint=${ordinal?.outpoint}`}
           isTransfer
           size="3rem"
+          iconOf={lookupIconOf(iconOfIndex, ordinal.origin?.outpoint)}
         />
         <OrdinalDetails>
           <OrdinalTitle theme={theme}>
@@ -528,6 +555,7 @@ export const OrdWallet = () => {
           url={`${gorillaPoolService.getBaseUrl(network)}/content/${selectedOrdinals[0]?.origin?.outpoint}?outpoint=${selectedOrdinals[0]?.outpoint}`}
           selected
           isTransfer
+          iconOf={lookupIconOf(iconOfIndex, selectedOrdinals[0]?.origin?.outpoint)}
         />
         <FormContainer noValidate onSubmit={(e) => handleCancelListing(e)}>
           <Show when={isPasswordRequired}>
@@ -566,6 +594,7 @@ export const OrdWallet = () => {
           url={`${gorillaPoolService.getBaseUrl(network)}/content/${ord.origin?.outpoint}?outpoint=${ord?.outpoint}`}
           selected={selectedOrdinals.some((selected) => selected.outpoint === ord.outpoint)}
           onClick={() => toggleOrdinalSelection(ord)}
+          iconOf={lookupIconOf(iconOfIndex, ord.origin?.outpoint)}
         />
       ));
   };
@@ -640,6 +669,7 @@ export const OrdWallet = () => {
           url={`${gorillaPoolService.getBaseUrl(network)}/content/${selectedOrdinals[0]?.origin?.outpoint}?outpoint=${selectedOrdinals[0]?.outpoint}`}
           selected
           isTransfer
+          iconOf={lookupIconOf(iconOfIndex, selectedOrdinals[0]?.origin?.outpoint)}
         />
         <FormContainer noValidate onSubmit={(e) => handleListOrdinal(e)}>
           <Input

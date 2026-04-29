@@ -106,10 +106,17 @@ export type OrdinalProps = {
   size?: string;
   inscription: OrdinalType;
   onClick?: () => void;
+  /**
+   * When this inscription's origin outpoint matches the icon-outpoint
+   * of a BSV-21 token in the user's holdings, the parent passes the
+   * token's sym here so we can render "Icon for {sym}" instead of the
+   * generic "Unknown Name" fallback. See utils/iconOf.ts.
+   */
+  iconOf?: { sym: string };
 };
 
 export const Ordinal = (props: OrdinalProps) => {
-  const { url, selected, isTransfer, size, inscription, theme, onClick } = props;
+  const { url, selected, isTransfer, size, inscription, theme, onClick, iconOf } = props;
   const contentType = inscription?.origin?.data?.insc?.file?.type;
 
   // We can use this function to properly render unique use cases that may have different metadata than what is supported by default
@@ -122,6 +129,8 @@ export const Ordinal = (props: OrdinalProps) => {
       } else {
         return 'Unknown SSM Channel';
       }
+    } else if (iconOf) {
+      return `Icon for ${iconOf.sym}`;
     } else {
       return 'Unknown Name';
     }
