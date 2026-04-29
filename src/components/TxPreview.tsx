@@ -6,6 +6,7 @@ import { WhiteLabelTheme } from '../theme.types';
 import { GP_BASE_URL, KNOWN_BURN_ADDRESSES } from '../utils/constants';
 import { convertAtomicValueToReadableTokenValue, formatNumberWithCommasAndDecimals, truncate } from '../utils/format';
 import { mapOrdinal } from '../utils/providerHelper';
+import { resolveIconUrl } from '../utils/tokenIcon';
 import { Show } from './Show';
 import lockImage from '../assets/lock.svg';
 import { useMemo } from 'react';
@@ -93,17 +94,17 @@ const TxPreview = ({ txData, inputsToSign }: TxPreviewProps) => {
     }
 
     if (bsv20WithIcon) {
-      return (
-        <NftImage
-          $isCircle
-          src={
-            ordinal.data.bsv20?.icon?.startsWith('https://')
-              ? ordinal.data.bsv20.icon
-              : `${GP_BASE_URL}/content/${ordinal.data.bsv20?.icon}`
-          }
-          alt="Token"
-        />
-      );
+      // resolveIconUrl handles full URLs (BSV-21 deploy-inscription
+      // icons enriched by H15) AND data: URLs (the new on-chain
+      // data-URL icon feature minted via Anvil-Swap's mint-machine
+      // §5.5). Prior hand-rolled `startsWith('https://')` check
+      // missed the data: prefix and would have wrapped data URLs
+      // into a malformed `gp/content/data:image/...`. Codex review
+      // e85c1fad LOW.
+      const resolved = resolveIconUrl(ordinal.data.bsv20?.icon ?? null, GP_BASE_URL);
+      if (resolved) {
+        return <NftImage $isCircle src={resolved} alt="Token" />;
+      }
     }
 
     if (isLock) {
