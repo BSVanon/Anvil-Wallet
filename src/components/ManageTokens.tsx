@@ -8,6 +8,7 @@ import { ToggleSwitch } from './ToggleSwitch';
 import { HeaderText, Text } from './Reusable';
 import { ChromeStorageObject } from '../services/types/chromeStorage.types';
 import { GENERIC_TOKEN_ICON } from '../utils/constants';
+import { resolveIconUrl } from '../utils/tokenIcon';
 import { FaTimes } from 'react-icons/fa';
 
 const Container = styled.div<WhiteLabelTheme>`
@@ -144,9 +145,17 @@ export const ManageTokens = (props: Bsv20TokensListProps) => {
             <TickerWrapper>
               <Icon
                 src={
-                  t.icon
-                    ? `${gorillaPoolService.getBaseUrl(chromeStorageService.getNetwork())}/content/${t.icon}`
-                    : GENERIC_TOKEN_ICON
+                  // Mirrors Bsv20TokensList's icon path. resolveIconUrl
+                  // distinguishes full URLs (BSV-21 deploy-inscription
+                  // icons enriched by H15 — used as-is) from content-id
+                  // outpoints (prepend GP base). Without this, a full
+                  // URL like `https://image2url/pumpkin.png` was
+                  // wrapped to `gorillapool.io/content/https://...` and
+                  // 404'd, falling through to GENERIC_TOKEN_ICON.
+                  // Robert click-test 2026-04-28 caught the same H17
+                  // bug here that was fixed in Bsv20TokensList.
+                  resolveIconUrl(t.icon, gorillaPoolService.getBaseUrl(chromeStorageService.getNetwork())) ??
+                  GENERIC_TOKEN_ICON
                 }
               />
               <TickerTextWrapper>
