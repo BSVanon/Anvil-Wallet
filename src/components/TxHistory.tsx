@@ -15,6 +15,7 @@ import {
 import { FaTimes, FaChevronDown, FaChevronUp, FaLink, FaTag } from 'react-icons/fa'; // Import FaTag
 import { TxLog } from 'spv-store';
 import { mapGpHistoryToTxLogs } from '../utils/providerHelper';
+import { resolveIconUrl } from '../utils/tokenIcon';
 import { getBlockTimestamps, formatBlockTime } from '../utils/blockTime';
 import { Button } from './Button';
 import bsvCoin from '../assets/bsv-coin.svg';
@@ -549,18 +550,21 @@ export const TxHistory = (props: TxHistoryProps) => {
             <FaTag style={{ width: '1rem', height: '1rem', color: theme.color.global.neutral }} />
           </ListIconWrapper>
         );
-      default:
-        return icon ? (
-          <Icon
-            src={`${gorillaPoolService.getBaseUrl(chromeStorageService.getNetwork())}/content/${icon}`}
-            alt="Summary Icon"
-            $isNFT={tag === 'origin'}
-          />
+      default: {
+        // resolveIconUrl handles full URLs (BSV-21 deploy-inscription
+        // icons enriched by H15) vs content-id outpoints (prepend GP
+        // base). Without it, full URLs got wrapped to
+        // `gorillapool.io/content/https://...` and 404'd. Same fix as
+        // ManageTokens.tsx (commit 2a2fc06, 2026-04-28).
+        const resolved = resolveIconUrl(icon, gorillaPoolService.getBaseUrl(chromeStorageService.getNetwork()));
+        return resolved ? (
+          <Icon src={resolved} alt="Summary Icon" $isNFT={tag === 'origin'} />
         ) : tag === ('origin' as Tag) ? (
           <Icon src={GENERIC_NFT_ICON} alt="Generic NFT Icon" />
         ) : (
           <Icon src={GENERIC_TOKEN_ICON} alt="Generic Token Icon" />
         );
+      }
     }
   };
 

@@ -19,6 +19,7 @@ import {
   YOURS_DEV_WALLET,
 } from '../../utils/constants';
 import { sleep } from '../../utils/sleep';
+import { resolveIconUrl } from '../../utils/tokenIcon';
 import { useBottomMenu } from '../../hooks/useBottomMenu';
 import { styled } from 'styled-components';
 import { Token } from '../../services/types/gorillaPool.types';
@@ -141,9 +142,12 @@ export const OrdPurchaseRequest = (props: OrdPurchaseRequestProps) => {
             whenFalseContent={
               <TokenIcon
                 src={
-                  tokenDetails?.icon
-                    ? `${gorillaPoolService.getBaseUrl(chromeStorageService.getNetwork())}/content/${tokenDetails.icon}`
-                    : GENERIC_TOKEN_ICON
+                  // resolveIconUrl handles full URLs vs content-id
+                  // outpoints. See commit 2a2fc06 for the H17 bug.
+                  resolveIconUrl(
+                    tokenDetails?.icon ?? null,
+                    gorillaPoolService.getBaseUrl(chromeStorageService.getNetwork()),
+                  ) ?? GENERIC_TOKEN_ICON
                 }
               />
             }

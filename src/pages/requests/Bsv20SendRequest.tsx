@@ -10,6 +10,7 @@ import { useBottomMenu } from '../../hooks/useBottomMenu';
 import { useSnackbar } from '../../hooks/useSnackbar';
 import { useTheme } from '../../hooks/useTheme';
 import { GENERIC_TOKEN_ICON } from '../../utils/constants';
+import { resolveIconUrl } from '../../utils/tokenIcon';
 import { truncate } from '../../utils/format';
 import { sleep } from '../../utils/sleep';
 import { sendMessage, removeWindow } from '../../utils/chromeHelpers';
@@ -42,8 +43,11 @@ export const Bsv20SendRequest = (props: Bsv20SendRequestProps) => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [token, setToken] = useState<Partial<Token>>();
   const isPasswordRequired = chromeStorageService.isPasswordRequired();
+  // resolveIconUrl: full URLs (BSV-21 deploy-inscription icons) used
+  // as-is, content-id outpoints get GP-prefixed. See commit 2a2fc06
+  // for the H17 bug this fixes.
   const tokenIcon =
-    (token?.icon && `${gorillaPoolService.getBaseUrl(chromeStorageService.getNetwork())}/content/${token.icon}`) ||
+    resolveIconUrl(token?.icon ?? null, gorillaPoolService.getBaseUrl(chromeStorageService.getNetwork())) ??
     GENERIC_TOKEN_ICON;
 
   useEffect(() => {
