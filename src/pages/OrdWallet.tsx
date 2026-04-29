@@ -583,9 +583,21 @@ export const OrdWallet = () => {
     </ContentWrapper>
   );
 
+  // Predicate shared by renderOrdinals + the empty-state guard so they
+  // stay in lockstep. Hides:
+  //   - BSV-20 deploy/mint inscriptions (those belong in Coins)
+  //   - Icon NFTs that match a BSV-21 token in the user's holdings
+  //     (operational metadata for the token; the user shouldn't be
+  //     managing them directly from the Ordinals tab)
+  const isVisibleOrdinal = (o: OrdType): boolean => {
+    if (o.origin?.data?.insc?.file?.type === 'application/bsv-20') return false;
+    if (lookupIconOf(iconOfIndex, o.origin?.outpoint)) return false;
+    return true;
+  };
+
   const renderOrdinals = (list: OrdType[]) => {
     return list
-      .filter((l) => l.origin?.data?.insc?.file?.type !== 'application/bsv-20')
+      .filter(isVisibleOrdinal)
       .map((ord) => (
         <Ordinal
           theme={theme}
@@ -602,7 +614,7 @@ export const OrdWallet = () => {
   const nft = (
     <>
       <Show
-        when={ordinals.filter((o) => o.origin?.data?.insc?.file?.type !== 'application/bsv-20').length > 0}
+        when={ordinals.filter(isVisibleOrdinal).length > 0}
         whenFalseContent={
           <NoInscriptionWrapper>
             <Text
