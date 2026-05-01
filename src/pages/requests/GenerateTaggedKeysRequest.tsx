@@ -8,6 +8,7 @@ import { Show } from '../../components/Show';
 import { useSnackbar } from '../../hooks/useSnackbar';
 import { useTheme } from '../../hooks/useTheme';
 import { useServiceContext } from '../../hooks/useServiceContext';
+import { useGroupCoverage } from '../../hooks/useGroupCoverage';
 import { removeWindow, sendMessage } from '../../utils/chromeHelpers';
 import { encryptUsingPrivKey } from '../../utils/crypto';
 import { truncate } from '../../utils/format';
@@ -42,7 +43,18 @@ export const GenerateTaggedKeysRequest = (props: GenerateTaggedKeysRequestProps)
   const [successTxId, setSuccessTxId] = useState('');
   const { addSnackbar, message } = useSnackbar();
   const { chromeStorageService, keysService, bsvService, oneSatSPV } = useServiceContext();
+  const { withBrc73Coverage } = keysService;
   const isPasswordRequired = chromeStorageService.isPasswordRequired();
+  const [hasSent, setHasSent] = useState(false);
+
+  // BRC-73: protocol coverage keyed on `request.label`. Apps wanting
+  // auto-resolve declare e.g.
+  //   `protocolPermissions: [{ protocolID: [0, 'avos-dex-key'], description: '...' }]`
+  // and request keys under that label without per-tx prompts.
+  const { loaded: brc73Loaded, check: brc73Check } = useGroupCoverage();
+  const coverage = brc73Loaded
+    ? brc73Check({ kind: 'protocol', protocolID: [0, request?.label ?? ''] })
+    : null;
 
   useEffect(() => {
     hideMenu();
@@ -138,8 +150,7 @@ export const GenerateTaggedKeysRequest = (props: GenerateTaggedKeysRequestProps)
     }
   };
 
-  const handleCreateTaggedKeys = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
+  const runCreateTaggedKeys = async (password: string): Promise<void> => {
     setIsProcessing(true);
 
     if (!request?.domain) {
@@ -155,14 +166,8 @@ export const GenerateTaggedKeysRequest = (props: GenerateTaggedKeysRequestProps)
       return;
     }
 
-    if (!passwordConfirm && isPasswordRequired) {
-      addSnackbar('You must enter a password!', 'error');
-      setIsProcessing(false);
-      return;
-    }
-
-    const keys = (await keysService.retrieveKeys(passwordConfirm)) as Keys;
-    const res = await createTaggedKeys(passwordConfirm, request as DerivationTag, keys);
+    const keys = (await keysService.retrieveKeys(password)) as Keys;
+    const res = await createTaggedKeys(password, request as DerivationTag, keys);
     setIsProcessing(true); // sendBsv processing in createTaggedKeys sets to false but it's still processing at this point
 
     if (!res.address || !res.pubKey) {
@@ -186,6 +191,28 @@ export const GenerateTaggedKeysRequest = (props: GenerateTaggedKeysRequestProps)
     });
     onResponse();
   };
+
+  const handleCreateTaggedKeys = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!passwordConfirm && isPasswordRequired) {
+      addSnackbar('You must enter a password!', 'error');
+      return;
+    }
+    await runCreateTaggedKeys(passwordConfirm);
+  };
+
+  // BRC-73 auto-resolve: covered protocol grants fire
+  // runCreateTaggedKeys without showing the Approve UI.
+  useEffect(() => {
+    if (hasSent || !coverage?.covered || !request) return;
+    setHasSent(true);
+    setTimeout(async () => {
+      await withBrc73Coverage(async () => {
+        await runCreateTaggedKeys('');
+      });
+    }, 100);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coverage?.covered, hasSent]);
 
   const clearRequest = async () => {
     sendMessage({

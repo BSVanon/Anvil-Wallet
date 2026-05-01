@@ -10,6 +10,7 @@ import { useBottomMenu } from '../../hooks/useBottomMenu';
 import { useSnackbar } from '../../hooks/useSnackbar';
 import { useTheme } from '../../hooks/useTheme';
 import { useServiceContext } from '../../hooks/useServiceContext';
+import { useGroupCoverage } from '../../hooks/useGroupCoverage';
 import { WhiteLabelTheme } from '../../theme.types';
 import { sleep } from '../../utils/sleep';
 import { sendMessage, removeWindow } from '../../utils/chromeHelpers';
@@ -44,9 +45,20 @@ export const SignMessageRequest = (props: SignMessageRequestProps) => {
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const [signature, setSignature] = useState<string | undefined>(undefined);
   const { addSnackbar, message } = useSnackbar();
-  const { chromeStorageService, bsvService } = useServiceContext();
+  const { chromeStorageService, bsvService, keysService } = useServiceContext();
+  const { withBrc73Coverage } = keysService;
   const isPasswordRequired = chromeStorageService.isPasswordRequired();
   const [isProcessing, setIsProcessing] = useState(false);
+  const [hasSent, setHasSent] = useState(false);
+
+  // BRC-73: protocol coverage. Yours `request.tag.label` maps to the
+  // BRC-43 protocolName slot; default 'identity' when unset (matches
+  // the wallet's existing fallback in the JSX below).
+  const protocolName = request?.tag?.label ?? 'identity';
+  const { loaded: brc73Loaded, check: brc73Check } = useGroupCoverage();
+  const coverage = brc73Loaded
+    ? brc73Check({ kind: 'protocol', protocolID: [0, protocolName] })
+    : null;
 
   useEffect(() => {
     handleSelect('bsv');
@@ -66,19 +78,12 @@ export const SignMessageRequest = (props: SignMessageRequestProps) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [message, signature]);
 
-  const handleSigning = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
+  const runSign = async (password: string): Promise<void> => {
     setIsProcessing(true);
     await sleep(25);
 
-    if (!passwordConfirm && isPasswordRequired) {
-      addSnackbar('You must enter a password!', 'error');
-      setIsProcessing(false);
-      return;
-    }
-
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const signRes = (await bsvService.signMessage(request, passwordConfirm)) as SignedMessage & { error?: string };
+    const signRes = (await bsvService.signMessage(request, password)) as SignedMessage & { error?: string };
     if (!signRes?.sig || signRes.error) {
       addSnackbar(getErrorMessage(signRes.error), 'error');
       setIsProcessing(false);
@@ -94,6 +99,28 @@ export const SignMessageRequest = (props: SignMessageRequestProps) => {
     });
     onSignature();
   };
+
+  const handleSigning = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!passwordConfirm && isPasswordRequired) {
+      addSnackbar('You must enter a password!', 'error');
+      return;
+    }
+    await runSign(passwordConfirm);
+  };
+
+  // BRC-73 auto-resolve: covered protocol-permission grants fire
+  // runSign with empty password under withBrc73Coverage.
+  useEffect(() => {
+    if (hasSent || !coverage?.covered || !request) return;
+    setHasSent(true);
+    setTimeout(async () => {
+      await withBrc73Coverage(async () => {
+        await runSign('');
+      });
+    }, 100);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coverage?.covered, hasSent]);
 
   const clearRequest = async () => {
     sendMessage({

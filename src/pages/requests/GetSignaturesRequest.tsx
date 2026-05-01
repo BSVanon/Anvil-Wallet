@@ -9,6 +9,7 @@ import { useBottomMenu } from '../../hooks/useBottomMenu';
 import { useSnackbar } from '../../hooks/useSnackbar';
 import { useTheme } from '../../hooks/useTheme';
 import { useServiceContext } from '../../hooks/useServiceContext';
+import { useGroupCoverage } from '../../hooks/useGroupCoverage';
 import { removeWindow, sendMessage } from '../../utils/chromeHelpers';
 import { sleep } from '../../utils/sleep';
 import TxPreview from '../../components/TxPreview';
@@ -39,11 +40,34 @@ export const GetSignaturesRequest = (props: GetSignaturesRequestProps) => {
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const { addSnackbar, message } = useSnackbar();
   const { chromeStorageService, contractService, oneSatSPV, keysService } = useServiceContext();
+  const { withBrc73Coverage } = keysService;
   const isPasswordRequired = chromeStorageService.isPasswordRequired();
   const [txData, setTxData] = useState<IndexContext>();
+  const [hasSent, setHasSent] = useState(false);
   const { bsvAddress, ordAddress, identityAddress } = keysService;
-  const [satsOut, setSatsOut] = useState(0);
   const { request, onSignature, popupId } = props;
+
+  // BRC-73: every sig request must be covered. If any requested
+  // protocolID isn't in the granted manifest, fall through to the
+  // per-tx prompt (signing is all-or-nothing — partial coverage isn't
+  // safe).
+  const { loaded: brc73Loaded, check: brc73Check } = useGroupCoverage();
+  const sigCoverages = brc73Loaded
+    ? request.sigRequests.map((r) => {
+        const protocolName =
+          // SignatureRequest may carry an explicit protocolID; fall
+          // back to a generic 'yours-tx-sig' name when absent.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          ((r as any).protocolID as string | undefined) ?? 'yours-tx-sig';
+        return brc73Check({
+          kind: 'protocol',
+          protocolID: [0, protocolName],
+        });
+      })
+    : null;
+  const allSigsCovered =
+    !!sigCoverages && sigCoverages.length > 0 && sigCoverages.every((c) => c.covered);
+  const [satsOut, setSatsOut] = useState(0);
   const [getSigsResponse, setGetSigsResponse] = useState<{
     sigResponses?: SignatureResponse[] | undefined;
     error?:
@@ -141,18 +165,11 @@ export const GetSignaturesRequest = (props: GetSignaturesRequestProps) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [message, getSigsResponse]);
 
-  const handleSigning = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
+  const runSigning = async (password: string): Promise<void> => {
     setIsProcessing(true);
     await sleep(25);
 
-    if (!passwordConfirm && isPasswordRequired) {
-      addSnackbar('You must enter a password!', 'error', 3000);
-      setIsProcessing(false);
-      return;
-    }
-
-    const getSigsRes = await contractService.getSignatures(request, passwordConfirm);
+    const getSigsRes = await contractService.getSignatures(request, password);
 
     if (getSigsRes?.error) {
       sendMessage({
@@ -175,6 +192,28 @@ export const GetSignaturesRequest = (props: GetSignaturesRequestProps) => {
     await sleep(2000);
     onSignature();
   };
+
+  const handleSigning = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!passwordConfirm && isPasswordRequired) {
+      addSnackbar('You must enter a password!', 'error', 3000);
+      return;
+    }
+    await runSigning(passwordConfirm);
+  };
+
+  // BRC-73 auto-resolve: covered tx-signing requests fire runSigning
+  // under withBrc73Coverage. All sig requests must be covered.
+  useEffect(() => {
+    if (hasSent || !allSigsCovered || !txData) return;
+    setHasSent(true);
+    setTimeout(async () => {
+      await withBrc73Coverage(async () => {
+        await runSigning('');
+      });
+    }, 100);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allSigsCovered, hasSent, txData]);
 
   const clearRequest = async () => {
     sendMessage({

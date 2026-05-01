@@ -184,14 +184,22 @@ export class BsvService {
       const requestSats = request.reduce((a: number, item: { satoshis: number }) => a + item.satoshis, 0);
       const bsvSendAmount = requestSats / BSV_DECIMAL_CONVERSION;
 
-      if (!showPreview && bsvSendAmount > Number(noApprovalLimit)) {
+      const isBelowNoApprovalLimit = Number(bsvSendAmount) <= Number(noApprovalLimit);
+      // BRC-73: if the popup-side handler set the brc73Covered flag,
+      // the calling app's granted manifest covers this spend and the
+      // user already pre-authorized at connect-time. Skip the early
+      // verifyPassword gate (it would reject the empty password used
+      // in auto-resolve), mirroring the existing isBelowNoApprovalLimit
+      // bypass.
+      const isAuthorizedToSpend = isBelowNoApprovalLimit || this.keysService.brc73Covered;
+
+      if (!showPreview && !isAuthorizedToSpend) {
         const isAuthenticated = await this.keysService.verifyPassword(password);
         if (!isAuthenticated) {
           return { error: 'invalid-password' };
         }
       }
 
-      const isBelowNoApprovalLimit = Number(bsvSendAmount) <= Number(noApprovalLimit);
       const keys = await this.keysService.retrieveKeys(password, isBelowNoApprovalLimit);
       if (!keys?.walletAddress) return { error: 'no-wallet-address' };
       const changeAddress = keys.walletAddress;

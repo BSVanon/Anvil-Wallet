@@ -14,9 +14,16 @@ import { sleep } from '../../utils/sleep';
 import { sendMessage, removeWindow } from '../../utils/chromeHelpers';
 import { SendMNEE } from 'yours-wallet-provider';
 import { useServiceContext } from '../../hooks/useServiceContext';
+import { useGroupCoverage } from '../../hooks/useGroupCoverage';
 import { getErrorMessage } from '../../utils/tools';
 import { MNEE_DECIMALS, MNEE_ICON_URL } from '../../utils/constants';
 import { ChromeStorageObject } from '../../services/types/chromeStorage.types';
+
+// BRC-73: MNEE auto-resolve wiring deferred — pending the cosigned
+// MNEE service path acceptance of the keysService.brc73Covered flag.
+// In v1, MNEE sends still show the per-tx prompt even when the manifest
+// declares the basket; the coverage hook below is invoked only so the
+// Settings panel can show the granted permission accurately.
 
 const Icon = styled.img`
   width: 3.5rem;
@@ -38,6 +45,12 @@ export const MNEESendRequest = (props: MNEESendRequestProps) => {
   const { addSnackbar } = useSnackbar();
   const { chromeStorageService, mneeService, keysService } = useServiceContext();
   const [isProcessing, setIsProcessing] = useState(false);
+
+  // BRC-73 coverage detection only (no auto-resolve in v1 — deferred
+  // until the MNEE cosign service accepts the brc73Covered flag).
+  // Hook is invoked so the Settings UI / metric paths can surface
+  // that the manifest grants this basket.
+  useGroupCoverage();
 
   const processMNEESend = async (password: string) => {
     try {

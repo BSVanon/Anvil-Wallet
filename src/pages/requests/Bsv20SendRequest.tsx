@@ -16,6 +16,7 @@ import { sleep } from '../../utils/sleep';
 import { sendMessage, removeWindow } from '../../utils/chromeHelpers';
 import { SendBsv20 } from 'yours-wallet-provider';
 import { useServiceContext } from '../../hooks/useServiceContext';
+import { useGroupCoverage } from '../../hooks/useGroupCoverage';
 import { normalize } from '../../utils/ordi';
 import { Token } from '../../services/types/gorillaPool.types';
 import { getErrorMessage } from '../../utils/tools';
@@ -38,11 +39,20 @@ export const Bsv20SendRequest = (props: Bsv20SendRequestProps) => {
   const { handleSelect, hideMenu } = useBottomMenu();
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const { addSnackbar } = useSnackbar();
-  const { ordinalService, chromeStorageService, gorillaPoolService } = useServiceContext();
+  const { ordinalService, chromeStorageService, gorillaPoolService, keysService } = useServiceContext();
   const { sendBSV20 } = ordinalService;
+  const { withBrc73Coverage } = keysService;
   const [isProcessing, setIsProcessing] = useState(false);
+  const [hasSent, setHasSent] = useState(false);
   const [token, setToken] = useState<Partial<Token>>();
   const isPasswordRequired = chromeStorageService.isPasswordRequired();
+
+  // BRC-73: skip the per-tx prompt when the requesting app's manifest
+  // grants basket access for this BSV-20 (basket name == idOrTick).
+  const { loaded: brc73Loaded, check: brc73Check } = useGroupCoverage();
+  const coverage = brc73Loaded
+    ? brc73Check({ kind: 'basket', basket: request?.idOrTick ?? '' })
+    : null;
   // resolveIconUrl: full URLs (BSV-21 deploy-inscription icons) used
   // as-is, content-id outpoints get GP-prefixed. See commit 2a2fc06
   // for the H17 bug this fixes.
@@ -114,6 +124,24 @@ export const Bsv20SendRequest = (props: Bsv20SendRequestProps) => {
     hideMenu();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [handleSelect, hideMenu]);
+
+  // BRC-73 auto-resolve: covered BSV-20 sends fire processBsv20Send()
+  // without showing the Approve UI. Waits for the token metadata fetch
+  // to complete (`token` populated) so processBsv20Send has what it
+  // needs. Wrapped in withBrc73Coverage so keysService.retrieveKeys
+  // bypasses the password prompt.
+  useEffect(() => {
+    if (hasSent || !coverage?.covered || !token || !request) return;
+    setHasSent(true);
+    setTimeout(async () => {
+      setIsProcessing(true);
+      await withBrc73Coverage(async () => {
+        await processBsv20Send();
+      });
+      setIsProcessing(false);
+    }, 100);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coverage?.covered, hasSent, token]);
 
   const handleSendBsv20 = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();

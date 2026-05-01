@@ -118,6 +118,16 @@ export type RequestParams = {
     | DecryptRequest;
   domain?: string;
   isAuthorized?: boolean;
+  /**
+   * BRC-73 group permissions manifest, optionally passed by the app at
+   * connect-time. The wallet prefers the canonical fetched manifest at
+   * `https://{domain}/manifest.json`; this field is the documented
+   * fallback for environments where the canonical endpoint is
+   * unavailable (local dev, agent-to-agent flows, embedded m2m
+   * scenarios). Validated as `GroupPermissions` before use — apps
+   * cannot smuggle arbitrary shapes through this slot.
+   */
+  manifest?: import('./services/types/brc73.types').GroupPermissions;
 };
 
 export type RequestEventDetail = {
@@ -182,9 +192,17 @@ export type EmitEvent = {
   detail: EmitEventDetail;
 };
 
+/**
+ * Per-account record of a connected app. The optional `groupPermissions`
+ * field carries a granted BRC-73 manifest — when present, request pages
+ * under `src/pages/requests/` short-circuit the per-tx prompt for any
+ * operation that the manifest covers (see
+ * `src/services/manifest/checkGroupCoverage.ts`).
+ */
 export type WhitelistedApp = {
   domain: string;
   icon: string;
+  groupPermissions?: import('./services/types/brc73.types').GrantedManifest;
 };
 
 export type Decision = 'approved' | 'declined';

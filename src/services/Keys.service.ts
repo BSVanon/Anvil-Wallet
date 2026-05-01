@@ -28,6 +28,13 @@ export class KeysService {
   bsvPubKey: string;
   ordPubKey: string;
   identityPubKey: string;
+  /**
+   * BRC-73: per-popup-mount flag set by request handlers when the
+   * calling app's granted manifest covers the operation. When true,
+   * `retrieveKeys` bypasses the password verification path. Always
+   * false outside an active auto-resolve flow.
+   */
+  brc73Covered = false;
   constructor(
     private readonly chromeStorageService: ChromeStorageService,
     private readonly oneSatSPV: SPVStore,
@@ -40,6 +47,22 @@ export class KeysService {
     this.ordPubKey = '';
     this.identityPubKey = '';
   }
+
+  /**
+   * Run a callback with the BRC-73 covered flag set, ensuring the flag
+   * is restored even if the callback throws. Used by popup-side request
+   * handlers when auto-resolving an operation covered by the granted
+   * manifest.
+   */
+  withBrc73Coverage = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const prev = this.brc73Covered;
+    this.brc73Covered = true;
+    try {
+      return await fn();
+    } finally {
+      this.brc73Covered = prev;
+    }
+  };
 
   private storeEncryptedKeys = async (
     passKey: string,
@@ -217,6 +240,16 @@ export class KeysService {
   };
 
   retrieveKeys = async (password?: string, isBelowNoApprovalLimit?: boolean): Promise<Keys | Partial<Keys>> => {
+    /**
+     * BRC-73: read the per-popup `brc73Covered` flag set by request
+     * handlers when the calling app's granted manifest covers this
+     * operation. Treats the request as pre-authorized — bypasses the
+     * password requirement just like `isBelowNoApprovalLimit` does.
+     * The user already explicitly accepted these permissions at
+     * connect-time, so re-prompting per-tx defeats the purpose of
+     * group permissions.
+     */
+    const brc73Covered = this.brc73Covered;
     const accountObj = this.chromeStorageService.getCurrentAccountObject();
     const { account, passKey } = accountObj;
     if (!account) throw new Error('No account found!');
@@ -251,8 +284,12 @@ export class KeysService {
         this.identityPubKey = keys.identityPubKey;
       }
 
-      if (!isPasswordRequired || isBelowNoApprovalLimit || password) {
-        const isVerified = isBelowNoApprovalLimit || !isPasswordRequired || (await this.verifyPassword(password ?? ''));
+      if (!isPasswordRequired || isBelowNoApprovalLimit || brc73Covered || password) {
+        const isVerified =
+          isBelowNoApprovalLimit ||
+          brc73Covered ||
+          !isPasswordRequired ||
+          (await this.verifyPassword(password ?? ''));
         if (isVerified) {
           return Object.assign({}, keys, {
             ordAddress: ordAddr,

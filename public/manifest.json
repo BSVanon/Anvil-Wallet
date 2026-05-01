@@ -4,6 +4,7 @@
   "name": "Anvil Wallet",
   "description": "Non-custodial BSV / 1Sat Ordinals / MNEE wallet. BRC-100 compatible. Minimal-delta fork of Yours Wallet with hardened chain-data redundancy.",
   "permissions": ["storage", "unlimitedStorage", "tabs", "notifications"],
+  "host_permissions": ["<all_urls>"],
   "action": {
     "default_popup": "index.html",
     "default_title": "Anvil Wallet"

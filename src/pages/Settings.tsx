@@ -177,6 +177,36 @@ export const Settings = () => {
     setConnectedApps(newList);
   };
 
+  /**
+   * BRC-73 revoke: clear the granted manifest from a connected app's
+   * whitelist entry without disconnecting the app entirely. Subsequent
+   * requests revert to the per-tx prompt flow. The user can reconnect
+   * later (or visit the app and trigger a re-grant) without losing
+   * their manifest history.
+   */
+  const handleRevokeGroupPermissions = async (domain: string) => {
+    const idx = connectedApps.findIndex((app) => app.domain === domain);
+    if (idx < 0) return;
+    const updated = { ...connectedApps[idx] };
+    delete updated.groupPermissions;
+    const newList = [...connectedApps];
+    newList[idx] = updated;
+    const { account } = chromeStorageService.getCurrentAccountObject();
+    if (!account) return;
+    const key: keyof ChromeStorageObject = 'accounts';
+    const update: Partial<ChromeStorageObject['accounts']> = {
+      [keysService.identityAddress]: {
+        ...account,
+        settings: {
+          ...account.settings,
+          whitelist: newList,
+        },
+      },
+    };
+    await chromeStorageService.updateNested(key, update);
+    setConnectedApps(newList);
+  };
+
   const handleDeleteAccountIntent = () => {
     setDecisionType('delete-account');
     setSpeedBumpMessage('Are you sure you want to delete this account? All keys and data will be lost.');
@@ -519,13 +549,76 @@ export const Settings = () => {
       <Show when={connectedApps.length > 0} whenFalseContent={<Text theme={theme}>No apps connected</Text>}>
         <ScrollableContainer>
           {connectedApps.map((app, idx) => {
+            const gp = app.groupPermissions;
+            const usage = gp?.budgetUsage;
+            const budget = gp?.permissions?.spendingAuthorization?.amount;
             return (
-              <ConnectedAppRow key={app.domain + idx} theme={theme}>
-                <ImageAndDomain>
-                  <AppIcon src={app.icon} />
-                  <SettingsText theme={theme}>{app.domain}</SettingsText>
-                </ImageAndDomain>
-                <XIcon src={x} onClick={() => handleRemoveDomain(app.domain)} />
+              <ConnectedAppRow
+                key={app.domain + idx}
+                theme={theme}
+                style={{ flexDirection: 'column', alignItems: 'stretch' }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <ImageAndDomain>
+                    <AppIcon src={app.icon} />
+                    <SettingsText theme={theme}>{app.domain}</SettingsText>
+                  </ImageAndDomain>
+                  <XIcon src={x} onClick={() => handleRemoveDomain(app.domain)} />
+                </div>
+                <Show when={!!gp}>
+                  <div
+                    style={{
+                      marginTop: '0.5rem',
+                      padding: '0.5rem',
+                      borderLeft: `3px solid ${theme.color.component.primaryButtonRightGradient}`,
+                      fontSize: '0.75rem',
+                      textAlign: 'left',
+                    }}
+                  >
+                    <Text
+                      theme={theme}
+                      style={{
+                        margin: '0 0 0.25rem 0',
+                        fontWeight: 700,
+                        fontSize: '0.75rem',
+                        color: theme.color.global.contrast,
+                      }}
+                    >
+                      Group permissions (BRC-73 · {gp?.source})
+                    </Text>
+                    <Show when={typeof budget === 'number'}>
+                      <Text
+                        theme={theme}
+                        style={{ margin: '0.1rem 0', fontSize: '0.7rem', color: theme.color.global.gray }}
+                      >
+                        Spent {(usage?.spentSats ?? 0).toLocaleString()} / {(budget ?? 0).toLocaleString()} sats this 30d window
+                      </Text>
+                    </Show>
+                    <Show when={(gp?.permissions.protocolPermissions ?? []).length > 0}>
+                      <Text
+                        theme={theme}
+                        style={{ margin: '0.1rem 0', fontSize: '0.7rem', color: theme.color.global.gray }}
+                      >
+                        Protocols: {(gp?.permissions.protocolPermissions ?? []).map((p) => p.protocolID[1]).join(', ')}
+                      </Text>
+                    </Show>
+                    <Show when={(gp?.permissions.basketAccess ?? []).length > 0}>
+                      <Text
+                        theme={theme}
+                        style={{ margin: '0.1rem 0', fontSize: '0.7rem', color: theme.color.global.gray }}
+                      >
+                        Baskets: {(gp?.permissions.basketAccess ?? []).map((b) => b.basket).join(', ')}
+                      </Text>
+                    </Show>
+                    <Button
+                      theme={theme}
+                      type="secondary-outline"
+                      label="Revoke group permissions"
+                      onClick={() => handleRevokeGroupPermissions(app.domain)}
+                      style={{ width: 'auto', padding: '0.25rem 0.5rem', fontSize: '0.7rem', marginTop: '0.25rem' }}
+                    />
+                  </div>
+                </Show>
               </ConnectedAppRow>
             );
           })}

@@ -9,6 +9,7 @@ import { useBottomMenu } from '../../hooks/useBottomMenu';
 import { useSnackbar } from '../../hooks/useSnackbar';
 import { useTheme } from '../../hooks/useTheme';
 import { useServiceContext } from '../../hooks/useServiceContext';
+import { useGroupCoverage } from '../../hooks/useGroupCoverage';
 import { removeWindow, sendMessage } from '../../utils/chromeHelpers';
 import { decryptUsingPrivKey } from '../../utils/crypto';
 import { getPrivateKeyFromTag, Keys } from '../../utils/keys';
@@ -33,15 +34,39 @@ export const DecryptRequest = (props: DecryptRequestProps) => {
   const [decryptedMessages, setDecryptedMessages] = useState<string[] | undefined>(undefined);
   const { addSnackbar, message } = useSnackbar();
   const { chromeStorageService, keysService } = useServiceContext();
+  const { withBrc73Coverage } = keysService;
   const [hasDecrypted, setHasDecrypted] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const isPasswordRequired = chromeStorageService.isPasswordRequired();
+
+  // BRC-73: protocol coverage on `request.tag.label`. Defaults to
+  // 'yours' to match the fallback in handleDecryption().
+  const protocolName = request?.tag?.label ?? 'yours';
+  const { loaded: brc73Loaded, check: brc73Check } = useGroupCoverage();
+  const coverage = brc73Loaded
+    ? brc73Check({ kind: 'protocol', protocolID: [0, protocolName] })
+    : null;
 
   useEffect(() => {
     if (hasDecrypted || isPasswordRequired || !request) return;
     handleDecryption();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasDecrypted, isPasswordRequired, request]);
+
+  // BRC-73 auto-resolve: covered grants fire handleDecryption under
+  // withBrc73Coverage, even when password is required. Skipped when
+  // !isPasswordRequired (the legacy effect above already handles it).
+  useEffect(() => {
+    if (hasDecrypted || !coverage?.covered || !request) return;
+    if (!isPasswordRequired) return;
+    setHasDecrypted(true);
+    setTimeout(async () => {
+      await withBrc73Coverage(async () => {
+        await handleDecryption();
+      });
+    }, 100);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coverage?.covered, hasDecrypted, isPasswordRequired]);
 
   useEffect(() => {
     handleSelect('bsv');

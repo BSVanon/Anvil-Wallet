@@ -41,6 +41,11 @@ import { ChromeStorageObject, ConnectRequest } from './services/types/chromeStor
 import { ChromeStorageService } from './services/ChromeStorage.service';
 import { GorillaPoolService } from './services/GorillaPool.service';
 import { WhatsOnChainService } from './services/WhatsOnChain.service';
+import { KeysService } from './services/Keys.service';
+import { ContractService } from './services/Contract.service';
+import { BsvService } from './services/Bsv.service';
+import { checkGroupCoverage, findGrantedManifest } from './services/manifest/checkGroupCoverage';
+import { persistCoveredSpend } from './services/manifest/recordSpend';
 import { mapOrdinal } from './utils/providerHelper';
 import { TxoLookup, TxoSort } from 'spv-store';
 import { initOneSatSPV } from './initSPVStore';
@@ -88,6 +93,30 @@ export let oneSatSPVPromise = chromeStorageService.getAndSetStorage().then(async
 
   return initOneSatSPV(chromeStorageService, isInServiceWorker);
 });
+
+/**
+ * BRC-73 background-side service stack.
+ *
+ * Lazily wired once `oneSatSPVPromise` resolves so the background can
+ * sign + broadcast covered requests directly without ever opening the
+ * popup. The popup-side ServiceContext continues to instantiate its
+ * own copy for the legacy (uncovered) flow — both stacks share the
+ * same chrome.storage.local state, so they stay coherent.
+ */
+export const bgServicesPromise = (async () => {
+  const oneSatSPV = await oneSatSPVPromise;
+  const keysService = new KeysService(chromeStorageService, oneSatSPV, wocService);
+  const contractService = new ContractService(keysService, oneSatSPV, wocService, chromeStorageService);
+  const bsvService = new BsvService(
+    keysService,
+    wocService,
+    contractService,
+    chromeStorageService,
+    oneSatSPV,
+    gorillaPoolService,
+  );
+  return { keysService, contractService, bsvService };
+})();
 
 console.log('Anvil Wallet Background Script Running!');
 
@@ -380,7 +409,7 @@ if (isInServiceWorker) {
       return;
     }
 
-    authorizeRequest(message).then((isAuthorized) => {
+    authorizeRequest(message).then(async (isAuthorized) => {
       if (message.action === YoursEventName.CONNECT) {
         return processConnectRequest(message, sendResponse, isAuthorized);
       }
@@ -392,6 +421,26 @@ if (isInServiceWorker) {
           error: 'Unauthorized!',
         });
         return;
+      }
+
+      // BRC-73: stamp the originating domain on storage before
+      // dispatching to the per-action handler. Popup-side request pages
+      // read `requestingDomain` to look up the granted manifest in the
+      // current account's whitelist and short-circuit per-tx prompts.
+      // Cleared in cleanup() when the response resolves.
+      //
+      // Codex review 30589f1733be5351 (MEDIUM): the write MUST be
+      // awaited before the typed-request handler runs its own
+      // `chromeStorageService.update()`. `update()` is a
+      // read-merge-write helper (`get(null) → deepMerge → set`); if
+      // the second write's `get(null)` races ahead of the first
+      // write's `set()`, the typed slot write reads stale storage and
+      // its merged object never gets `requestingDomain`, leaving
+      // `useGroupCoverage` to look up an empty domain and the
+      // request to nondeterministically fall back to a manual prompt.
+      const requestingDomain = (message.params as { domain?: string } | undefined)?.domain;
+      if (requestingDomain) {
+        await chromeStorageService.update({ requestingDomain });
       }
 
       switch (message.action) {
@@ -806,9 +855,125 @@ if (isInServiceWorker) {
       });
   };
 
+  /**
+   * Recently broadcasted txids from BRC-73 auto-resolve flows. Used to
+   * dedupe budget increments when the wallet's UTXO selector rebuilds
+   * the same tx (same inputs → same signed bytes → same txid) and
+   * re-broadcasts it idempotently. Without dedup, every "already on
+   * network" rebroadcast would double-count against the spending
+   * budget. Bounded to last 100 txids; in-memory only (resets on
+   * service-worker restart, which is fine — restart triggers a fresh
+   * SPV sync that resolves the stale-UTXO root cause).
+   */
+  const recentlyBroadcastedTxids = new Set<string>();
+  const trackBroadcast = (txid: string) => {
+    recentlyBroadcastedTxids.add(txid);
+    if (recentlyBroadcastedTxids.size > 100) {
+      const first = recentlyBroadcastedTxids.values().next().value;
+      if (first) recentlyBroadcastedTxids.delete(first);
+    }
+  };
+
+  /**
+   * BRC-73 background-side auto-resolve for sendBsv. Returns true if
+   * the request was fully processed (signed + broadcast + response
+   * sent + budget updated) — caller skips the popup launch entirely.
+   * Returns false if anything is missing or fails (no manifest, budget
+   * exceeded, sign/broadcast error) — caller falls through to the
+   * legacy popup-launch flow so the user can manually approve, see
+   * the error, etc.
+   *
+   * Closing the "popup flashes black with an ephemeral snackbar" UX
+   * gap: when this returns true, no chrome window is ever created.
+   * The DEX page just sees the response resolve directly.
+   */
+  const tryAutoResolveSendBsv = async (
+    requestingDomain: string | undefined,
+    sendBsvRequest: SendBsv[],
+    sendResponse: CallbackResponse,
+  ): Promise<boolean> => {
+    if (!requestingDomain) return false;
+    try {
+      // The background's chromeStorageService has its own in-memory
+      // `this.storage` cache, separate from the popup's instance.
+      // When the user clicks Revoke in the popup's Settings page, the
+      // popup writes to chrome.storage.local (durable) and refreshes
+      // ITS cache, but the background's cache stays stale. Force a
+      // re-read here so revoke takes effect on the next request.
+      await chromeStorageService.getAndSetStorage();
+
+      const { account } = chromeStorageService.getCurrentAccountObject();
+      const granted = findGrantedManifest(account?.settings.whitelist, requestingDomain);
+      if (!granted) return false;
+
+      const requestSats = sendBsvRequest.reduce((a, r) => a + (r.satoshis ?? 0), 0);
+      const coverage = checkGroupCoverage(granted, { kind: 'spending', sats: requestSats });
+      if (!coverage.covered) return false;
+
+      const { keysService, bsvService } = await bgServicesPromise;
+      const noApprovalLimit = account?.settings.noApprovalLimit ?? 0;
+
+      // Set the per-request brc73Covered flag so retrieveKeys +
+      // sendBsv's early verifyPassword gate both bypass the password
+      // requirement, mirroring the popup-side withBrc73Coverage flow.
+      keysService.brc73Covered = true;
+      let sendRes;
+      try {
+        sendRes = await bsvService.sendBsv(sendBsvRequest, '', noApprovalLimit, false);
+      } finally {
+        keysService.brc73Covered = false;
+      }
+
+      if (!sendRes?.txid || sendRes?.error) {
+        // Fall through — popup will surface the actual error.
+        console.warn('[BRC-73] background auto-resolve failed; falling back to popup', sendRes?.error);
+        return false;
+      }
+
+      // Idempotent-rebroadcast guard: if bsvService returned a txid we
+      // already spent against this manifest, the wallet's UTXO
+      // selector rebuilt the same tx (stale spv-store state).
+      // broadcastMultiSource detects "already on network" and treats
+      // it as success, but we should NOT double-count against the
+      // user's budget. The on-chain tx is still the original spend.
+      const alreadyBroadcast = recentlyBroadcastedTxids.has(sendRes.txid);
+      trackBroadcast(sendRes.txid);
+
+      // Persist the spend on the granted manifest so the rolling-
+      // window budget reflects what's been used. Skip on idempotent
+      // rebroadcast — the budget already covered this txid.
+      if (!alreadyBroadcast && account?.addresses?.identityAddress) {
+        await persistCoveredSpend(
+          chromeStorageService,
+          account.addresses.identityAddress,
+          requestingDomain,
+          requestSats,
+        );
+      }
+      if (alreadyBroadcast) {
+        console.warn(
+          `[BRC-73] tx ${sendRes.txid} already broadcast in this session; budget not double-counted`,
+        );
+      }
+
+      sendResponse({
+        type: YoursEventName.SEND_BSV,
+        success: true,
+        data: { txid: sendRes.txid, rawtx: sendRes.rawtx },
+      });
+      // Clear the requestingDomain slot so subsequent uncovered
+      // requests don't see it carry over.
+      chromeStorageService.remove('requestingDomain');
+      return true;
+    } catch (error) {
+      console.warn('[BRC-73] background auto-resolve threw; falling back to popup', error);
+      return false;
+    }
+  };
+
   // Important note: We process the InscribeRequest as a SendBsv request.
-  const processSendBsvRequest = (
-    message: { params: { data: SendBsv[] | InscribeRequest[] | LockRequest[] } },
+  const processSendBsvRequest = async (
+    message: { params: { data: SendBsv[] | InscribeRequest[] | LockRequest[]; domain?: string } },
     sendResponse: CallbackResponse,
   ) => {
     if (!message.params.data) {
@@ -820,7 +985,6 @@ if (isInServiceWorker) {
       return;
     }
     try {
-      responseCallbackForSendBsvRequest = sendResponse;
       let sendBsvRequest = message.params.data as SendBsv[];
 
       // If in this if block, it's an inscribe() request.
@@ -845,6 +1009,17 @@ if (isInServiceWorker) {
         sendBsvRequest = convertLockReqToSendBsvReq(lockRequest);
       }
 
+      // BRC-73: try background auto-resolve first. If covered, the
+      // request is fully processed without ever opening the popup.
+      // Only fall through to the legacy popup flow when not covered.
+      const autoResolved = await tryAutoResolveSendBsv(
+        message.params.domain,
+        sendBsvRequest,
+        sendResponse,
+      );
+      if (autoResolved) return;
+
+      responseCallbackForSendBsvRequest = sendResponse;
       chromeStorageService.update({ sendBsvRequest }).then(() => {
         launchPopUp();
       });
@@ -1242,7 +1417,9 @@ if (isInServiceWorker) {
     chromeStorageService.getAndSetStorage().then((res) => {
       if (res?.popupWindowId) {
         removeWindow(res.popupWindowId);
-        chromeStorageService.remove([...types, 'popupWindowId']);
+        // Always clear `requestingDomain` alongside the typed request
+        // slot so the next request starts with a fresh BRC-73 lookup.
+        chromeStorageService.remove([...types, 'popupWindowId', 'requestingDomain']);
       }
     });
   };
