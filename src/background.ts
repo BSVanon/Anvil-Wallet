@@ -47,7 +47,7 @@ import { BsvService } from './services/Bsv.service';
 import { checkGroupCoverage, findGrantedManifest } from './services/manifest/checkGroupCoverage';
 import { persistCoveredSpend } from './services/manifest/recordSpend';
 import { TxidDedupTracker } from './utils/txidDedupTracker';
-import { mapOrdinal } from './utils/providerHelper';
+import { mapOrdinal, mapGpOrdinal } from './utils/providerHelper';
 import { TxoLookup, TxoSort } from 'spv-store';
 import { initOneSatSPV } from './initSPVStore';
 import { CHROME_STORAGE_OBJECT_VERSION, HOSTED_YOURS_IMAGE, MNEE_API_TOKEN } from './utils/constants';
@@ -711,26 +711,103 @@ if (isInServiceWorker) {
         const lookup = message?.params?.mimeType
           ? new TxoLookup('origin', 'type', message.params.mimeType)
           : new TxoLookup('origin');
-        if (message.params.from === undefined || message.params.from === null) {
-          const result = await oneSatSPV.search(lookup, TxoSort.DESC, 0);
-          const mapped = result.txos.map(mapOrdinal);
-          sendResponse({
-            type: YoursEventName.GET_ORDINALS,
-            success: true,
-            data: mapped,
-          });
-        } else {
-          const results = await oneSatSPV.search(
+        const isFirstPage = message.params.from === undefined || message.params.from === null;
+        const limit = message.params.limit || 50;
+
+        // Tier 1: spv-store. Same query as before.
+        let primary;
+        try {
+          primary = await oneSatSPV.search(
             lookup,
             TxoSort.DESC,
-            message.params.limit || 50,
-            message.params.from || '',
+            isFirstPage ? 0 : limit,
+            isFirstPage ? '' : message.params.from || '',
           );
-          const mapped = results.txos.map(mapOrdinal);
+        } catch (err) {
+          console.warn(
+            '[provider getOrdinals] spv-store tier threw — falling back to GorillaPool:',
+            (err as Error).message,
+          );
+          primary = undefined;
+        }
+
+        const primaryMapped = (primary?.txos ?? []).map(mapOrdinal);
+
+        // If spv-store returned anything (mapped or unmapped), trust
+        // it. Only fall through when it's TRULY empty.
+        if (primaryMapped.length > 0 || (primary?.txos.length ?? 0) > 0) {
+          if (isFirstPage) {
+            sendResponse({
+              type: YoursEventName.GET_ORDINALS,
+              success: true,
+              data: primaryMapped,
+            });
+          } else {
+            sendResponse({
+              type: YoursEventName.GET_ORDINALS,
+              success: true,
+              data: { ordinals: primaryMapped, from: primary?.nextPage },
+            });
+          }
+          return;
+        }
+
+        // Tier 2: GorillaPool fallback. Mirrors the existing pattern
+        // in `OrdinalService.getOrdinals` (popup-side display path),
+        // applied here so app-side providers (DEX, etc.) calling
+        // `window.yours.getOrdinals()` work even when spv-store is
+        // degraded (e.g., 1sat-provider register-failed). Without
+        // this, every provider-driven flow that walks the user's
+        // ordinals list breaks the moment spv-store has an empty
+        // index — the wallet's own UI worked because it had a
+        // fallback; provider callers didn't.
+        //
+        // Pagination caveat: GP's address-unspent endpoint returns
+        // unpaginated; if `from` is set we return empty rather than
+        // re-serving everything. Same trade-off as OrdinalService.
+        if (!isFirstPage) {
           sendResponse({
             type: YoursEventName.GET_ORDINALS,
             success: true,
-            data: { ordinals: mapped, from: results.nextPage },
+            data: { ordinals: [], from: undefined },
+          });
+          return;
+        }
+        try {
+          const { account } = chromeStorageService.getCurrentAccountObject();
+          const addresses = [account?.addresses?.ordAddress, account?.addresses?.bsvAddress].filter(
+            (a): a is string => typeof a === 'string' && a.length > 0,
+          );
+          const rows = (
+            await Promise.all(
+              addresses.map((addr) =>
+                gorillaPoolService.getOrdinalUtxosByAddress(addr).catch(() => []),
+              ),
+            )
+          ).flat();
+          const fallbackMapped = rows
+            .filter(
+              (r) =>
+                r.origin?.data?.insc?.file?.type !== 'panda/tag' &&
+                r.origin?.data?.insc?.file?.type !== 'yours/tag',
+            )
+            .map((r) => mapGpOrdinal(r, r.owner ?? ''));
+          if (fallbackMapped.length > 0) {
+            console.warn(
+              `[provider getOrdinals] GorillaPool fallback returned ${fallbackMapped.length} ordinal(s)`,
+            );
+          }
+          sendResponse({
+            type: YoursEventName.GET_ORDINALS,
+            success: true,
+            data: fallbackMapped,
+          });
+        } catch (err) {
+          console.warn('[provider getOrdinals] GorillaPool fallback failed:', (err as Error).message);
+          sendResponse({
+            type: YoursEventName.GET_ORDINALS,
+            success: true,
+            data: [],
           });
         }
       });
