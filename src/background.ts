@@ -23,6 +23,7 @@ import {
   SendMNEEResponse,
   SendMNEE,
   LockRequest,
+  Ordinal,
 } from 'yours-wallet-provider';
 import {
   CustomListenerName,
@@ -47,7 +48,7 @@ import { BsvService } from './services/Bsv.service';
 import { checkGroupCoverage, findGrantedManifest } from './services/manifest/checkGroupCoverage';
 import { persistCoveredSpend } from './services/manifest/recordSpend';
 import { TxidDedupTracker } from './utils/txidDedupTracker';
-import { mapOrdinal, mapGpOrdinal } from './utils/providerHelper';
+import { mapOrdinal, mapGpOrdinal, mapBsv20TxoToOrdinal } from './utils/providerHelper';
 import { TxoLookup, TxoSort } from 'spv-store';
 import { initOneSatSPV } from './initSPVStore';
 import { CHROME_STORAGE_OBJECT_VERSION, HOSTED_YOURS_IMAGE, MNEE_API_TOKEN } from './utils/constants';
@@ -778,23 +779,59 @@ if (isInServiceWorker) {
           const addresses = [account?.addresses?.ordAddress, account?.addresses?.bsvAddress].filter(
             (a): a is string => typeof a === 'string' && a.length > 0,
           );
-          const rows = (
+
+          // Tier 2a: plain inscription UTXOs (NFTs, content inscriptions).
+          // GP's `/api/txos/address/{addr}/unspent` filters out BSV-20/21
+          // fungible-token UTXOs server-side, so the cucumber UTXOs the
+          // user holds will NOT appear here even though they're 1-sat
+          // origin-bearing outputs in spv-store's view of the world.
+          const inscriptionRows = (
             await Promise.all(
               addresses.map((addr) =>
                 gorillaPoolService.getOrdinalUtxosByAddress(addr).catch(() => []),
               ),
             )
           ).flat();
-          const fallbackMapped = rows
+          const inscriptionMapped = inscriptionRows
             .filter(
               (r) =>
                 r.origin?.data?.insc?.file?.type !== 'panda/tag' &&
                 r.origin?.data?.insc?.file?.type !== 'yours/tag',
             )
             .map((r) => mapGpOrdinal(r, r.owner ?? ''));
+
+          // Tier 2b: BSV-21 fungible token UTXOs. Enumerate the user's
+          // token balances via `/api/bsv20/balance`, then for each
+          // tick/id with confirmed balance call the BSV-21-specific
+          // unspent endpoint and shape each row into an Ordinal so
+          // caller code (`useCreatePool`'s `findTokenUtxo` etc.) finds
+          // it via `origin.data.bsv20.id` / `data.bsv20.id`.
+          let tokenMapped: Ordinal[] = [];
+          try {
+            const balances = await gorillaPoolService.getBsv20Balances(addresses);
+            const heldTokens = balances.filter(
+              (b) => (b.all?.confirmed ?? 0n) + (b.all?.pending ?? 0n) > 0n,
+            );
+            const tokenUtxoArrays = await Promise.all(
+              heldTokens.map(async (b) => {
+                const tick = b.id ?? b.tick;
+                if (!tick) return [];
+                const utxos = (await gorillaPoolService.getBSV20Utxos(tick, addresses).catch(() => [])) ?? [];
+                return utxos.map((u) => mapBsv20TxoToOrdinal(u));
+              }),
+            );
+            tokenMapped = tokenUtxoArrays.flat();
+          } catch (err) {
+            console.warn(
+              '[provider getOrdinals] BSV-21 enumeration failed (tier 2b):',
+              (err as Error).message,
+            );
+          }
+
+          const fallbackMapped = [...inscriptionMapped, ...tokenMapped];
           if (fallbackMapped.length > 0) {
             console.warn(
-              `[provider getOrdinals] GorillaPool fallback returned ${fallbackMapped.length} ordinal(s)`,
+              `[provider getOrdinals] GorillaPool fallback returned ${inscriptionMapped.length} inscription(s) + ${tokenMapped.length} BSV-21 token UTXO(s)`,
             );
           }
           sendResponse({

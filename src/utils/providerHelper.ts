@@ -1,6 +1,6 @@
 import { Utils } from '@bsv/sdk';
 import { Txo, TxLog } from 'spv-store';
-import { Ordinal } from 'yours-wallet-provider';
+import { BSV20Txo, Ordinal } from 'yours-wallet-provider';
 import { GpOrdinalRow } from '../services/types/gorillaPool.ordinal';
 
 export function mapOrdinal(t: Txo): Ordinal {
@@ -233,6 +233,45 @@ export function mapGpHistoryToTxLogs(rows: GpOrdinalRow[]): TxLog[] {
     return b.idx - a.idx;
   });
   return logs;
+}
+
+/**
+ * Shape a BSV-21 token UTXO (returned by GorillaPool's
+ * `/api/bsv20/{address}/id/{tokenId}` endpoint) into the Ordinal
+ * shape expected by `provider.getOrdinals` consumers. The id +
+ * amount land in BOTH `origin.data.bsv20` and `data.bsv20` so
+ * caller code that checks either path resolves correctly.
+ *
+ * Used by the background `processGetOrdinalsRequest` fallback when
+ * spv-store is degraded — without this, BSV-21 token UTXOs are
+ * invisible to provider callers (they'd see only plain inscriptions
+ * via the address-unspent endpoint, which filters BSV-20/21 out).
+ */
+export function mapBsv20TxoToOrdinal(utxo: BSV20Txo): Ordinal {
+  const id = utxo.id ?? utxo.tick ?? '';
+  const amt = Number(utxo.amt ?? 0);
+  const bsv20 = { id, amt, p: 'bsv-20' as never, op: utxo.op ?? 'transfer', tick: utxo.tick };
+  return {
+    txid: utxo.txid,
+    vout: utxo.vout,
+    outpoint: utxo.outpoint,
+    satoshis: 1, // BSV-21 token UTXOs are always 1 sat
+    script: utxo.script ?? '',
+    owner: utxo.owner ?? '',
+    spend: utxo.spend ?? '',
+    origin: {
+      outpoint: id, // BSV-21 deploy outpoint is the canonical id
+      nonce: 0,
+      data: {
+        bsv20: bsv20 as never,
+      },
+    } as never,
+    height: utxo.height,
+    idx: utxo.idx,
+    data: {
+      bsv20: bsv20 as never,
+    },
+  } as Ordinal;
 }
 
 export function mapGpOrdinal(row: GpOrdinalRow, ownerAddress: string): Ordinal {
