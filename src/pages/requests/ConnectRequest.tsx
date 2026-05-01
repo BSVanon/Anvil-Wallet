@@ -57,13 +57,6 @@ const GroupPermissionsContainer = styled(PermissionsContainer)`
   margin-top: 0.5rem;
 `;
 
-const GroupPermissionDetail = styled.div`
-  margin: 0.25rem 0 0.25rem 2.25rem;
-  font-size: 0.75rem;
-  opacity: 0.7;
-  text-align: left;
-`;
-
 const TogglePermission = styled.div<{ $checked: boolean }>`
   display: flex;
   align-items: flex-start;
