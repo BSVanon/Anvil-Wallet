@@ -46,6 +46,7 @@ import { ContractService } from './services/Contract.service';
 import { BsvService } from './services/Bsv.service';
 import { checkGroupCoverage, findGrantedManifest } from './services/manifest/checkGroupCoverage';
 import { persistCoveredSpend } from './services/manifest/recordSpend';
+import { TxidDedupTracker } from './utils/txidDedupTracker';
 import { mapOrdinal } from './utils/providerHelper';
 import { TxoLookup, TxoSort } from 'spv-store';
 import { initOneSatSPV } from './initSPVStore';
@@ -859,20 +860,13 @@ if (isInServiceWorker) {
    * Recently broadcasted txids from BRC-73 auto-resolve flows. Used to
    * dedupe budget increments when the wallet's UTXO selector rebuilds
    * the same tx (same inputs → same signed bytes → same txid) and
-   * re-broadcasts it idempotently. Without dedup, every "already on
-   * network" rebroadcast would double-count against the spending
-   * budget. Bounded to last 100 txids; in-memory only (resets on
-   * service-worker restart, which is fine — restart triggers a fresh
-   * SPV sync that resolves the stale-UTXO root cause).
+   * re-broadcasts it idempotently. Bounded; in-memory only (resets
+   * on service-worker restart, which is fine — restart triggers a
+   * fresh SPV sync that resolves the stale-UTXO root cause).
+   * See `src/utils/txidDedupTracker.ts` for capacity / eviction
+   * semantics.
    */
-  const recentlyBroadcastedTxids = new Set<string>();
-  const trackBroadcast = (txid: string) => {
-    recentlyBroadcastedTxids.add(txid);
-    if (recentlyBroadcastedTxids.size > 100) {
-      const first = recentlyBroadcastedTxids.values().next().value;
-      if (first) recentlyBroadcastedTxids.delete(first);
-    }
-  };
+  const broadcastDedupTracker = new TxidDedupTracker();
 
   /**
    * BRC-73 background-side auto-resolve for sendBsv. Returns true if
@@ -936,13 +930,12 @@ if (isInServiceWorker) {
       // broadcastMultiSource detects "already on network" and treats
       // it as success, but we should NOT double-count against the
       // user's budget. The on-chain tx is still the original spend.
-      const alreadyBroadcast = recentlyBroadcastedTxids.has(sendRes.txid);
-      trackBroadcast(sendRes.txid);
+      const { wasDuplicate } = broadcastDedupTracker.track(sendRes.txid);
 
       // Persist the spend on the granted manifest so the rolling-
       // window budget reflects what's been used. Skip on idempotent
       // rebroadcast — the budget already covered this txid.
-      if (!alreadyBroadcast && account?.addresses?.identityAddress) {
+      if (!wasDuplicate && account?.addresses?.identityAddress) {
         await persistCoveredSpend(
           chromeStorageService,
           account.addresses.identityAddress,
@@ -950,7 +943,7 @@ if (isInServiceWorker) {
           requestSats,
         );
       }
-      if (alreadyBroadcast) {
+      if (wasDuplicate) {
         console.warn(
           `[BRC-73] tx ${sendRes.txid} already broadcast in this session; budget not double-counted`,
         );

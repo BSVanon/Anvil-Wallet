@@ -162,4 +162,40 @@ describe('findGrantedManifest', () => {
     expect(findGrantedManifest(undefined, 'a.com')).toBeUndefined();
     expect(findGrantedManifest([], undefined)).toBeUndefined();
   });
+
+  /**
+   * Simulates the popup's `handleRevokeGroupPermissions`: shallow-
+   * copy the entry, `delete updated.groupPermissions`, replace the
+   * array slot. This is the exact transformation the Settings panel
+   * applies. Validates that the lookup correctly observes the revoked
+   * state — without this, `tryAutoResolveSendBsv` would still see the
+   * manifest and skip the popup launch even after the user revoked.
+   */
+  it('returns undefined after a simulated revoke (groupPermissions key deleted)', () => {
+    const g = buildGranted({ spendingAuthorization: { amount: 500_000, description: '' } });
+    const before = [{ domain: 'anvilswap.com', icon: '', groupPermissions: g }];
+    expect(findGrantedManifest(before, 'anvilswap.com')).toBe(g);
+
+    // Mirror handleRevokeGroupPermissions exactly:
+    const updated: Partial<typeof before[0]> = { ...before[0] };
+    delete updated.groupPermissions;
+    const after = [updated as typeof before[0]];
+
+    expect(findGrantedManifest(after, 'anvilswap.com')).toBeUndefined();
+    // The connection itself should still be present (revoke clears
+    // the manifest but keeps the whitelist entry, distinct from
+    // a full disconnect).
+    expect(after[0].domain).toBe('anvilswap.com');
+  });
+
+  /**
+   * If revoke ever regresses to setting `groupPermissions: undefined`
+   * instead of deleting the key, this test still passes — both the
+   * "key absent" and "key present but undefined" cases must resolve
+   * to undefined.
+   */
+  it('returns undefined when groupPermissions is explicitly undefined', () => {
+    const wl = [{ domain: 'a.com', icon: '', groupPermissions: undefined }];
+    expect(findGrantedManifest(wl, 'a.com')).toBeUndefined();
+  });
 });
