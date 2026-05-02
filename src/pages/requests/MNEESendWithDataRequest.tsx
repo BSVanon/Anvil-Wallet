@@ -28,16 +28,21 @@ import { sleep } from '../../utils/sleep';
 import { sendMessage, removeWindow } from '../../utils/chromeHelpers';
 import { useServiceContext } from '../../hooks/useServiceContext';
 import { useGroupCoverage } from '../../hooks/useGroupCoverage';
+import { isMneeWithDataCovered } from '../../services/manifest/mneeWithDataCoverage';
 import { getErrorMessage } from '../../utils/tools';
 import { MNEE_DECIMALS, MNEE_ICON_URL } from '../../utils/constants';
 import type { SendMNEEWithData } from '../../services/types/mnee.types';
 
-// BRC-73: MNEE-with-data auto-resolve deferred to v1.1 — same blocker
-// as MNEESendRequest (mneeService.transfer requires WIF and the
-// keysService.brc73Covered flag does not yet propagate through the
-// MNEE cosign service path). Coverage hook is invoked so future
-// Settings UI can surface the granted basket access; per-tx prompt
-// remains in v1.
+// BRC-73 auto-resolve: when the requesting app's manifest grants any
+// AVOS protocol scope ([0,'avos-mnee-buy-vault'] | [0,'tm-dex-swap'] |
+// [0,'avos-pushtx-magic']), this popup fires processSend('') under
+// withBrc73Coverage. retrieveKeys honors keysService.brc73Covered so
+// the user-half-signed MNEE transfer builds without a password prompt.
+// See services/manifest/mneeWithDataCoverage.ts for scope rationale.
+//
+// (The previous "deferred to v1.1" note pointed at a wallet-side
+// blocker that no longer exists — retrieveKeys was upgraded in
+// `0adb973` to honor brc73Covered.)
 
 const Icon = styled.img`
   width: 3.5rem;
@@ -68,16 +73,34 @@ export const MNEESendWithDataRequest = (props: MNEESendWithDataRequestProps) => 
   const { handleSelect, hideMenu } = useBottomMenu();
   const { addSnackbar } = useSnackbar();
   const { mneeService, keysService, chromeStorageService } = useServiceContext();
+  const { withBrc73Coverage } = keysService;
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [hasResolved, setHasResolved] = useState(false);
+  const isPasswordRequired = chromeStorageService.isPasswordRequired();
 
-  // Coverage detection only in v1; see top-of-file note.
-  useGroupCoverage();
+  const { loaded: brc73Loaded, check: brc73Check } = useGroupCoverage();
+  const coverage = brc73Loaded ? isMneeWithDataCovered(brc73Check) : null;
 
   useEffect(() => {
     handleSelect('bsv');
     hideMenu();
   }, [handleSelect, hideMenu]);
+
+  // BRC-73 auto-resolve: covered grants fire processSend('') under
+  // withBrc73Coverage so retrieveKeys returns the WIF without a
+  // password. Mirrors the EncryptRequest/DecryptRequest pattern.
+  useEffect(() => {
+    if (hasResolved || !coverage?.covered || !request) return;
+    setHasResolved(true);
+    setIsProcessing(true);
+    setTimeout(async () => {
+      await withBrc73Coverage(async () => {
+        await processSend('');
+      });
+    }, 100);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coverage?.covered, hasResolved, request]);
 
   const clearRequest = async () => {
     sendMessage({
@@ -112,7 +135,10 @@ export const MNEESendWithDataRequest = (props: MNEESendWithDataRequestProps) => 
 
       const keys = await keysService.retrieveKeys(password);
       if (!keys?.walletWif) {
-        addSnackbar('Invalid password!', 'error');
+        addSnackbar(
+          keysService.brc73Covered ? 'Auto-resolve failed: keys unavailable' : 'Invalid password!',
+          'error',
+        );
         setIsProcessing(false);
         return;
       }
@@ -159,7 +185,9 @@ export const MNEESendWithDataRequest = (props: MNEESendWithDataRequestProps) => 
     e.preventDefault();
     setIsProcessing(true);
     await sleep(25);
-    if (!passwordConfirm) {
+    // BRC-73 auto-resolve clears the popup-side gate. Manual flow keeps
+    // the password requirement when the wallet has one configured.
+    if (!passwordConfirm && isPasswordRequired && !keysService.brc73Covered) {
       addSnackbar('You must enter a password!', 'error');
       setIsProcessing(false);
       return;
@@ -174,7 +202,7 @@ export const MNEESendWithDataRequest = (props: MNEESendWithDataRequestProps) => 
       <Show when={isProcessing}>
         <PageLoader theme={theme} message={request.broadcast ? 'Sending MNEE…' : 'Building MNEE draft…'} />
       </Show>
-      <Show when={!isProcessing && !!request}>
+      <Show when={!isProcessing && !!request && !hasResolved}>
         <ConfirmContent>
           <Icon src={MNEE_ICON_URL} />
           <HeaderText theme={theme}>Approve MNEE Request</HeaderText>

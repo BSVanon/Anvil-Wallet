@@ -19,11 +19,16 @@ import { getErrorMessage } from '../../utils/tools';
 import { MNEE_DECIMALS, MNEE_ICON_URL } from '../../utils/constants';
 import { ChromeStorageObject } from '../../services/types/chromeStorage.types';
 
-// BRC-73: MNEE auto-resolve wiring deferred — pending the cosigned
-// MNEE service path acceptance of the keysService.brc73Covered flag.
-// In v1, MNEE sends still show the per-tx prompt even when the manifest
-// declares the basket; the coverage hook below is invoked only so the
-// Settings panel can show the granted permission accurately.
+// BRC-73: ordinary MNEE sends remain manual-approval. The wallet-side
+// blocker (mneeService.transfer requiring WIF + brc73Covered not
+// propagating through retrieveKeys) was resolved in `0adb973` —
+// retrieveKeys honors keysService.brc73Covered. What's still missing
+// is a manifest scope that grants MNEE sends; today no app's manifest
+// declares one. AVOS swap MNEE-with-data flows are handled by the
+// MNEESendWithDataRequest sibling, which auto-resolves when an AVOS
+// protocol scope is granted (see services/manifest/mneeWithDataCoverage).
+// If/when a "mnee-send" protocol gets added to a published manifest,
+// this popup can wire auto-resolve the same way.
 
 const Icon = styled.img`
   width: 3.5rem;
