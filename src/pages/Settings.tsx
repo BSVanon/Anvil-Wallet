@@ -61,6 +61,47 @@ const XIcon = styled.img`
   cursor: pointer;
 `;
 
+/**
+ * Compact inline button for the BRC-73 revoke action inside a
+ * Connected Apps row. Pre-2026-05-02 this slot used the standard
+ * `Button` with `type="secondary-outline"` + inline width override
+ * (`width: 'auto'`), but secondary-outline wraps its inner button in
+ * a `GradientBorderWrapper` fixed at `width: 87%`. Combined with the
+ * long "Revoke group permissions" label, the inner-content auto-width
+ * could overflow the gradient frame at narrow widths (Robert UX
+ * 2026-05-02 cucumber test: "Settings revoke button overruns the
+ * green primary-button gradient on the Connected Apps card").
+ *
+ * This component sidesteps the gradient wrapper entirely with a
+ * minimal styled `<button>` sized for inline placement. Destructive
+ * styling (red border + red text on hover) signals the action's
+ * blast radius without the visual weight of a primary button.
+ */
+const InlineRevokeButton = styled.button<WhiteLabelTheme>`
+  align-self: flex-start;
+  margin-top: 0.4rem;
+  padding: 0.2rem 0.55rem;
+  font-family: 'Inter', Arial, Helvetica, sans-serif;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: ${({ theme }) => theme.color.global.gray};
+  background: transparent;
+  border: 1px solid ${({ theme }) => theme.color.component.warningButton};
+  border-radius: 0.25rem;
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease;
+
+  &:hover {
+    color: ${({ theme }) => theme.color.component.warningButtonText};
+    background: ${({ theme }) => theme.color.component.warningButton + '22'};
+  }
+
+  &:focus-visible {
+    outline: 2px solid ${({ theme }) => theme.color.component.warningButton};
+    outline-offset: 1px;
+  }
+`;
+
 const AppIcon = styled.img`
   width: 3rem;
   height: 3rem;
@@ -610,13 +651,13 @@ export const Settings = () => {
                         Baskets: {(gp?.permissions.basketAccess ?? []).map((b) => b.basket).join(', ')}
                       </Text>
                     </Show>
-                    <Button
+                    <InlineRevokeButton
                       theme={theme}
-                      type="secondary-outline"
-                      label="Revoke group permissions"
+                      type="button"
                       onClick={() => handleRevokeGroupPermissions(app.domain)}
-                      style={{ width: 'auto', padding: '0.25rem 0.5rem', fontSize: '0.7rem', marginTop: '0.25rem' }}
-                    />
+                    >
+                      Revoke group permissions
+                    </InlineRevokeButton>
                   </div>
                 </Show>
               </ConnectedAppRow>
