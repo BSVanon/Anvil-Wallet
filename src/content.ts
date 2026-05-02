@@ -39,7 +39,15 @@ self.addEventListener(CustomListenerName.YOURS_REQUEST, (e: Event) => {
     params = { ...params, ...originalParams };
   }
 
-  params.domain = window.location.hostname;
+  // Use `host` (hostname + port) not `hostname` (port stripped). For
+  // production HTTPS origins the two are equivalent — browsers strip
+  // the default :443 — but for local development (vite on :5173, etc.)
+  // the port is critical: BRC-73's manifest fetch resolves
+  // `https://{domain}/manifest.json`, and `localhost` (no port) 404s
+  // while `localhost:5173` succeeds. Existing whitelist entries
+  // recorded under just `localhost` won't match new connections; the
+  // user can clear those from Settings → Connected Apps and reconnect.
+  params.domain = window.location.host;
 
   chrome.runtime.sendMessage({ action: type, params }, buildResponseCallback(messageId));
 });

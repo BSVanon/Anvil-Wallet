@@ -10,6 +10,7 @@ import { Show } from '../../components/Show';
 import { useSnackbar } from '../../hooks/useSnackbar';
 import { useTheme } from '../../hooks/useTheme';
 import { useServiceContext } from '../../hooks/useServiceContext';
+import { useGroupCoverage } from '../../hooks/useGroupCoverage';
 import { removeWindow, sendMessage } from '../../utils/chromeHelpers';
 import {
   BSV20_INDEX_FEE,
@@ -43,9 +44,11 @@ export const OrdPurchaseRequest = (props: OrdPurchaseRequestProps) => {
   const { hideMenu } = useBottomMenu();
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const { addSnackbar } = useSnackbar();
-  const { gorillaPoolService, ordinalService, chromeStorageService } = useServiceContext();
+  const { gorillaPoolService, ordinalService, chromeStorageService, keysService } = useServiceContext();
+  const { withBrc73Coverage } = keysService;
   const [inscription, setInscription] = useState<OrdinalType | undefined>();
   const [isProcessing, setIsProcessing] = useState(false);
+  const [hasSent, setHasSent] = useState(false);
   const [tokenDetails, setTokenDetails] = useState<Partial<Token>>();
   const [isLoaded, setIsLoaded] = useState(false);
   const marketplaceAddress = request.marketplaceAddress ?? YOURS_DEV_WALLET;
@@ -53,6 +56,21 @@ export const OrdPurchaseRequest = (props: OrdPurchaseRequestProps) => {
   const outpoint = request.outpoint;
   const isPasswordRequired = chromeStorageService.isPasswordRequired();
   const network = chromeStorageService.getNetwork();
+
+  // BRC-73: spending coverage check sized to the full settlement
+  // amount (price + marketplace fee + BSV20 index fee where
+  // applicable). Computed from inscription.data.list.price which
+  // populates after the async getOrigin() effect; the auto-resolve
+  // effect below waits for both `coverage?.covered` AND `isLoaded`.
+  const purchaseSats = inscription?.data?.list?.price
+    ? Math.ceil(
+        Number(inscription.data.list.price) * (1 + marketplaceRate) +
+          (tokenDetails ? BSV20_INDEX_FEE : 0),
+      )
+    : 0;
+  const { loaded: brc73Loaded, check: brc73Check, recordCoveredSpend } = useGroupCoverage();
+  const coverage =
+    brc73Loaded && purchaseSats > 0 ? brc73Check({ kind: 'spending', sats: purchaseSats }) : null;
 
   useEffect(() => {
     hideMenu();
@@ -75,8 +93,7 @@ export const OrdPurchaseRequest = (props: OrdPurchaseRequestProps) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [request.outpoint]);
 
-  const handlePurchaseOrdinal = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
+  const runPurchase = async (password: string): Promise<void> => {
     if (!inscription) {
       addSnackbar('Could not locate the ordinal!', 'error');
       return;
@@ -90,19 +107,17 @@ export const OrdPurchaseRequest = (props: OrdPurchaseRequestProps) => {
       return;
     }
 
-    if (!passwordConfirm && isPasswordRequired) {
-      addSnackbar('You must enter a password!', 'error');
-      setIsProcessing(false);
-      return;
-    }
-
     const purchaseListing: PurchaseOrdinal & { password: string } = {
       marketplaceAddress,
       marketplaceRate,
       outpoint,
-      password: passwordConfirm,
+      password,
     };
-    const purchaseRes = await ordinalService.purchaseGlobalOrderbookListing(purchaseListing, inscription, tokenDetails as Token | undefined);
+    const purchaseRes = await ordinalService.purchaseGlobalOrderbookListing(
+      purchaseListing,
+      inscription,
+      tokenDetails as Token | undefined,
+    );
 
     if (!purchaseRes.txid || purchaseRes.error) {
       addSnackbar(getErrorMessage(purchaseRes.error), 'error');
@@ -111,6 +126,11 @@ export const OrdPurchaseRequest = (props: OrdPurchaseRequestProps) => {
     }
 
     addSnackbar('Purchase Successful!', 'success');
+
+    if (coverage?.covered) {
+      await recordCoveredSpend(purchaseSats);
+    }
+
     await sleep(2000);
     sendMessage({
       action: 'purchaseOrdinalResponse',
@@ -118,6 +138,31 @@ export const OrdPurchaseRequest = (props: OrdPurchaseRequestProps) => {
     });
     onResponse();
   };
+
+  const handlePurchaseOrdinal = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!passwordConfirm && isPasswordRequired) {
+      addSnackbar('You must enter a password!', 'error');
+      return;
+    }
+    await runPurchase(passwordConfirm);
+  };
+
+  // BRC-73 auto-resolve: when the requesting app's manifest covers the
+  // purchase amount, fire `runPurchase` with empty password under
+  // withBrc73Coverage so keysService.retrieveKeys bypasses the
+  // password gate. Waits for inscription load (so price is known) +
+  // !hasSent guard.
+  useEffect(() => {
+    if (hasSent || !coverage?.covered || !inscription) return;
+    setHasSent(true);
+    setTimeout(async () => {
+      await withBrc73Coverage(async () => {
+        await runPurchase('');
+      });
+    }, 100);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coverage?.covered, hasSent, inscription]);
 
   const clearRequest = async () => {
     sendMessage({

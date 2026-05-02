@@ -11,11 +11,20 @@ import { Show } from '../../components/Show';
 import { useSnackbar } from '../../hooks/useSnackbar';
 import { useTheme } from '../../hooks/useTheme';
 import { useServiceContext } from '../../hooks/useServiceContext';
+import { useGroupCoverage } from '../../hooks/useGroupCoverage';
 import { removeWindow, sendMessage } from '../../utils/chromeHelpers';
 import { truncate } from '../../utils/format';
 import { sleep } from '../../utils/sleep';
 import { useBottomMenu } from '../../hooks/useBottomMenu';
 import { getErrorMessage } from '../../utils/tools';
+
+/**
+ * BRC-46-style basket name for native (non-BSV-20) ordinals. Apps
+ * declaring `basketAccess: [{ basket: 'ordinals' }]` in their manifest
+ * grant the wallet permission to auto-resolve ordinal-transfer requests
+ * without per-tx prompts.
+ */
+const ORDINAL_BASKET = 'ordinals';
 
 export type OrdTransferRequestProps = {
   request: TransferOrdinal;
@@ -30,10 +39,17 @@ export const OrdTransferRequest = (props: OrdTransferRequestProps) => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const { addSnackbar } = useSnackbar();
-  const { chromeStorageService, ordinalService, gorillaPoolService } = useServiceContext();
+  const { chromeStorageService, ordinalService, gorillaPoolService, keysService } = useServiceContext();
+  const { withBrc73Coverage } = keysService;
   const isPasswordRequired = chromeStorageService.isPasswordRequired();
   const network = chromeStorageService.getNetwork();
   const [ordinal, setOrdinal] = useState<OrdType | undefined>();
+  const [hasSent, setHasSent] = useState(false);
+
+  // BRC-73: ordinal transfers require basket access for the
+  // 'ordinals' BRC-46 basket.
+  const { loaded: brc73Loaded, check: brc73Check } = useGroupCoverage();
+  const coverage = brc73Loaded ? brc73Check({ kind: 'basket', basket: ORDINAL_BASKET }) : null;
 
   useEffect(() => {
     hideMenu();
@@ -47,10 +63,8 @@ export const OrdTransferRequest = (props: OrdTransferRequestProps) => {
     });
   }, [ordinalService, request.outpoint]);
 
-  const handleTransferOrdinal = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
+  const runTransfer = async (password: string): Promise<void> => {
     setIsProcessing(true);
-
     await sleep(25);
     if (!validate(request.address)) {
       addSnackbar('Invalid address detected!', 'info');
@@ -58,13 +72,7 @@ export const OrdTransferRequest = (props: OrdTransferRequestProps) => {
       return;
     }
 
-    if (!passwordConfirm && isPasswordRequired) {
-      addSnackbar('You must enter a password!', 'error');
-      setIsProcessing(false);
-      return;
-    }
-
-    const transferRes = await ordinalService.transferOrdinal(request.address, request.outpoint, passwordConfirm);
+    const transferRes = await ordinalService.transferOrdinal(request.address, request.outpoint, password);
 
     if (!transferRes.txid || transferRes.error) {
       addSnackbar(getErrorMessage(transferRes.error), 'error');
@@ -81,6 +89,28 @@ export const OrdTransferRequest = (props: OrdTransferRequestProps) => {
     });
     onResponse();
   };
+
+  const handleTransferOrdinal = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!passwordConfirm && isPasswordRequired) {
+      addSnackbar('You must enter a password!', 'error');
+      return;
+    }
+    await runTransfer(passwordConfirm);
+  };
+
+  // BRC-73 auto-resolve: covered ordinal transfers fire runTransfer
+  // under withBrc73Coverage so retrieveKeys bypasses the password gate.
+  useEffect(() => {
+    if (hasSent || !coverage?.covered) return;
+    setHasSent(true);
+    setTimeout(async () => {
+      await withBrc73Coverage(async () => {
+        await runTransfer('');
+      });
+    }, 100);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coverage?.covered, hasSent]);
 
   const clearRequest = async () => {
     sendMessage({

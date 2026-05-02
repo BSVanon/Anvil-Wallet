@@ -23,6 +23,7 @@ import {
   SendMNEEResponse,
   SendMNEE,
   LockRequest,
+  Ordinal,
 } from 'yours-wallet-provider';
 import {
   CustomListenerName,
@@ -41,7 +42,13 @@ import { ChromeStorageObject, ConnectRequest } from './services/types/chromeStor
 import { ChromeStorageService } from './services/ChromeStorage.service';
 import { GorillaPoolService } from './services/GorillaPool.service';
 import { WhatsOnChainService } from './services/WhatsOnChain.service';
-import { mapOrdinal } from './utils/providerHelper';
+import { KeysService } from './services/Keys.service';
+import { ContractService } from './services/Contract.service';
+import { BsvService } from './services/Bsv.service';
+import { checkGroupCoverage, findGrantedManifest } from './services/manifest/checkGroupCoverage';
+import { persistCoveredSpend } from './services/manifest/recordSpend';
+import { TxidDedupTracker } from './utils/txidDedupTracker';
+import { mapOrdinal, mapGpOrdinal, mapBsv20TxoToOrdinal } from './utils/providerHelper';
 import { TxoLookup, TxoSort } from 'spv-store';
 import { initOneSatSPV } from './initSPVStore';
 import { CHROME_STORAGE_OBJECT_VERSION, HOSTED_YOURS_IMAGE, MNEE_API_TOKEN } from './utils/constants';
@@ -88,6 +95,30 @@ export let oneSatSPVPromise = chromeStorageService.getAndSetStorage().then(async
 
   return initOneSatSPV(chromeStorageService, isInServiceWorker);
 });
+
+/**
+ * BRC-73 background-side service stack.
+ *
+ * Lazily wired once `oneSatSPVPromise` resolves so the background can
+ * sign + broadcast covered requests directly without ever opening the
+ * popup. The popup-side ServiceContext continues to instantiate its
+ * own copy for the legacy (uncovered) flow — both stacks share the
+ * same chrome.storage.local state, so they stay coherent.
+ */
+export const bgServicesPromise = (async () => {
+  const oneSatSPV = await oneSatSPVPromise;
+  const keysService = new KeysService(chromeStorageService, oneSatSPV, wocService);
+  const contractService = new ContractService(keysService, oneSatSPV, wocService, chromeStorageService);
+  const bsvService = new BsvService(
+    keysService,
+    wocService,
+    contractService,
+    chromeStorageService,
+    oneSatSPV,
+    gorillaPoolService,
+  );
+  return { keysService, contractService, bsvService };
+})();
 
 console.log('Anvil Wallet Background Script Running!');
 
@@ -380,7 +411,7 @@ if (isInServiceWorker) {
       return;
     }
 
-    authorizeRequest(message).then((isAuthorized) => {
+    authorizeRequest(message).then(async (isAuthorized) => {
       if (message.action === YoursEventName.CONNECT) {
         return processConnectRequest(message, sendResponse, isAuthorized);
       }
@@ -392,6 +423,26 @@ if (isInServiceWorker) {
           error: 'Unauthorized!',
         });
         return;
+      }
+
+      // BRC-73: stamp the originating domain on storage before
+      // dispatching to the per-action handler. Popup-side request pages
+      // read `requestingDomain` to look up the granted manifest in the
+      // current account's whitelist and short-circuit per-tx prompts.
+      // Cleared in cleanup() when the response resolves.
+      //
+      // Codex review 30589f1733be5351 (MEDIUM): the write MUST be
+      // awaited before the typed-request handler runs its own
+      // `chromeStorageService.update()`. `update()` is a
+      // read-merge-write helper (`get(null) → deepMerge → set`); if
+      // the second write's `get(null)` races ahead of the first
+      // write's `set()`, the typed slot write reads stale storage and
+      // its merged object never gets `requestingDomain`, leaving
+      // `useGroupCoverage` to look up an empty domain and the
+      // request to nondeterministically fall back to a manual prompt.
+      const requestingDomain = (message.params as { domain?: string } | undefined)?.domain;
+      if (requestingDomain) {
+        await chromeStorageService.update({ requestingDomain });
       }
 
       switch (message.action) {
@@ -661,26 +712,139 @@ if (isInServiceWorker) {
         const lookup = message?.params?.mimeType
           ? new TxoLookup('origin', 'type', message.params.mimeType)
           : new TxoLookup('origin');
-        if (message.params.from === undefined || message.params.from === null) {
-          const result = await oneSatSPV.search(lookup, TxoSort.DESC, 0);
-          const mapped = result.txos.map(mapOrdinal);
-          sendResponse({
-            type: YoursEventName.GET_ORDINALS,
-            success: true,
-            data: mapped,
-          });
-        } else {
-          const results = await oneSatSPV.search(
+        const isFirstPage = message.params.from === undefined || message.params.from === null;
+        const limit = message.params.limit || 50;
+
+        // Tier 1: spv-store. Same query as before.
+        let primary;
+        try {
+          primary = await oneSatSPV.search(
             lookup,
             TxoSort.DESC,
-            message.params.limit || 50,
-            message.params.from || '',
+            isFirstPage ? 0 : limit,
+            isFirstPage ? '' : message.params.from || '',
           );
-          const mapped = results.txos.map(mapOrdinal);
+        } catch (err) {
+          console.warn(
+            '[provider getOrdinals] spv-store tier threw — falling back to GorillaPool:',
+            (err as Error).message,
+          );
+          primary = undefined;
+        }
+
+        const primaryMapped = (primary?.txos ?? []).map(mapOrdinal);
+
+        // If spv-store returned anything (mapped or unmapped), trust
+        // it. Only fall through when it's TRULY empty.
+        if (primaryMapped.length > 0 || (primary?.txos.length ?? 0) > 0) {
+          if (isFirstPage) {
+            sendResponse({
+              type: YoursEventName.GET_ORDINALS,
+              success: true,
+              data: primaryMapped,
+            });
+          } else {
+            sendResponse({
+              type: YoursEventName.GET_ORDINALS,
+              success: true,
+              data: { ordinals: primaryMapped, from: primary?.nextPage },
+            });
+          }
+          return;
+        }
+
+        // Tier 2: GorillaPool fallback. Mirrors the existing pattern
+        // in `OrdinalService.getOrdinals` (popup-side display path),
+        // applied here so app-side providers (DEX, etc.) calling
+        // `window.yours.getOrdinals()` work even when spv-store is
+        // degraded (e.g., 1sat-provider register-failed). Without
+        // this, every provider-driven flow that walks the user's
+        // ordinals list breaks the moment spv-store has an empty
+        // index — the wallet's own UI worked because it had a
+        // fallback; provider callers didn't.
+        //
+        // Pagination caveat: GP's address-unspent endpoint returns
+        // unpaginated; if `from` is set we return empty rather than
+        // re-serving everything. Same trade-off as OrdinalService.
+        if (!isFirstPage) {
           sendResponse({
             type: YoursEventName.GET_ORDINALS,
             success: true,
-            data: { ordinals: mapped, from: results.nextPage },
+            data: { ordinals: [], from: undefined },
+          });
+          return;
+        }
+        try {
+          const { account } = chromeStorageService.getCurrentAccountObject();
+          const addresses = [account?.addresses?.ordAddress, account?.addresses?.bsvAddress].filter(
+            (a): a is string => typeof a === 'string' && a.length > 0,
+          );
+
+          // Tier 2a: plain inscription UTXOs (NFTs, content inscriptions).
+          // GP's `/api/txos/address/{addr}/unspent` filters out BSV-20/21
+          // fungible-token UTXOs server-side, so the cucumber UTXOs the
+          // user holds will NOT appear here even though they're 1-sat
+          // origin-bearing outputs in spv-store's view of the world.
+          const inscriptionRows = (
+            await Promise.all(
+              addresses.map((addr) =>
+                gorillaPoolService.getOrdinalUtxosByAddress(addr).catch(() => []),
+              ),
+            )
+          ).flat();
+          const inscriptionMapped = inscriptionRows
+            .filter(
+              (r) =>
+                r.origin?.data?.insc?.file?.type !== 'panda/tag' &&
+                r.origin?.data?.insc?.file?.type !== 'yours/tag',
+            )
+            .map((r) => mapGpOrdinal(r, r.owner ?? ''));
+
+          // Tier 2b: BSV-21 fungible token UTXOs. Enumerate the user's
+          // token balances via `/api/bsv20/balance`, then for each
+          // tick/id with confirmed balance call the BSV-21-specific
+          // unspent endpoint and shape each row into an Ordinal so
+          // caller code (`useCreatePool`'s `findTokenUtxo` etc.) finds
+          // it via `origin.data.bsv20.id` / `data.bsv20.id`.
+          let tokenMapped: Ordinal[] = [];
+          try {
+            const balances = await gorillaPoolService.getBsv20Balances(addresses);
+            const heldTokens = balances.filter(
+              (b) => (b.all?.confirmed ?? 0n) + (b.all?.pending ?? 0n) > 0n,
+            );
+            const tokenUtxoArrays = await Promise.all(
+              heldTokens.map(async (b) => {
+                const tick = b.id ?? b.tick;
+                if (!tick) return [];
+                const utxos = (await gorillaPoolService.getBSV20Utxos(tick, addresses).catch(() => [])) ?? [];
+                return utxos.map((u) => mapBsv20TxoToOrdinal(u));
+              }),
+            );
+            tokenMapped = tokenUtxoArrays.flat();
+          } catch (err) {
+            console.warn(
+              '[provider getOrdinals] BSV-21 enumeration failed (tier 2b):',
+              (err as Error).message,
+            );
+          }
+
+          const fallbackMapped = [...inscriptionMapped, ...tokenMapped];
+          if (fallbackMapped.length > 0) {
+            console.warn(
+              `[provider getOrdinals] GorillaPool fallback returned ${inscriptionMapped.length} inscription(s) + ${tokenMapped.length} BSV-21 token UTXO(s)`,
+            );
+          }
+          sendResponse({
+            type: YoursEventName.GET_ORDINALS,
+            success: true,
+            data: fallbackMapped,
+          });
+        } catch (err) {
+          console.warn('[provider getOrdinals] GorillaPool fallback failed:', (err as Error).message);
+          sendResponse({
+            type: YoursEventName.GET_ORDINALS,
+            success: true,
+            data: [],
           });
         }
       });
@@ -806,9 +970,117 @@ if (isInServiceWorker) {
       });
   };
 
+  /**
+   * Recently broadcasted txids from BRC-73 auto-resolve flows. Used to
+   * dedupe budget increments when the wallet's UTXO selector rebuilds
+   * the same tx (same inputs → same signed bytes → same txid) and
+   * re-broadcasts it idempotently. Bounded; in-memory only (resets
+   * on service-worker restart, which is fine — restart triggers a
+   * fresh SPV sync that resolves the stale-UTXO root cause).
+   * See `src/utils/txidDedupTracker.ts` for capacity / eviction
+   * semantics.
+   */
+  const broadcastDedupTracker = new TxidDedupTracker();
+
+  /**
+   * BRC-73 background-side auto-resolve for sendBsv. Returns true if
+   * the request was fully processed (signed + broadcast + response
+   * sent + budget updated) — caller skips the popup launch entirely.
+   * Returns false if anything is missing or fails (no manifest, budget
+   * exceeded, sign/broadcast error) — caller falls through to the
+   * legacy popup-launch flow so the user can manually approve, see
+   * the error, etc.
+   *
+   * Closing the "popup flashes black with an ephemeral snackbar" UX
+   * gap: when this returns true, no chrome window is ever created.
+   * The DEX page just sees the response resolve directly.
+   */
+  const tryAutoResolveSendBsv = async (
+    requestingDomain: string | undefined,
+    sendBsvRequest: SendBsv[],
+    sendResponse: CallbackResponse,
+  ): Promise<boolean> => {
+    if (!requestingDomain) return false;
+    try {
+      // The background's chromeStorageService has its own in-memory
+      // `this.storage` cache, separate from the popup's instance.
+      // When the user clicks Revoke in the popup's Settings page, the
+      // popup writes to chrome.storage.local (durable) and refreshes
+      // ITS cache, but the background's cache stays stale. Force a
+      // re-read here so revoke takes effect on the next request.
+      await chromeStorageService.getAndSetStorage();
+
+      const { account } = chromeStorageService.getCurrentAccountObject();
+      const granted = findGrantedManifest(account?.settings.whitelist, requestingDomain);
+      if (!granted) return false;
+
+      const requestSats = sendBsvRequest.reduce((a, r) => a + (r.satoshis ?? 0), 0);
+      const coverage = checkGroupCoverage(granted, { kind: 'spending', sats: requestSats });
+      if (!coverage.covered) return false;
+
+      const { keysService, bsvService } = await bgServicesPromise;
+      const noApprovalLimit = account?.settings.noApprovalLimit ?? 0;
+
+      // Set the per-request brc73Covered flag so retrieveKeys +
+      // sendBsv's early verifyPassword gate both bypass the password
+      // requirement, mirroring the popup-side withBrc73Coverage flow.
+      keysService.brc73Covered = true;
+      let sendRes;
+      try {
+        sendRes = await bsvService.sendBsv(sendBsvRequest, '', noApprovalLimit, false);
+      } finally {
+        keysService.brc73Covered = false;
+      }
+
+      if (!sendRes?.txid || sendRes?.error) {
+        // Fall through — popup will surface the actual error.
+        console.warn('[BRC-73] background auto-resolve failed; falling back to popup', sendRes?.error);
+        return false;
+      }
+
+      // Idempotent-rebroadcast guard: if bsvService returned a txid we
+      // already spent against this manifest, the wallet's UTXO
+      // selector rebuilt the same tx (stale spv-store state).
+      // broadcastMultiSource detects "already on network" and treats
+      // it as success, but we should NOT double-count against the
+      // user's budget. The on-chain tx is still the original spend.
+      const { wasDuplicate } = broadcastDedupTracker.track(sendRes.txid);
+
+      // Persist the spend on the granted manifest so the rolling-
+      // window budget reflects what's been used. Skip on idempotent
+      // rebroadcast — the budget already covered this txid.
+      if (!wasDuplicate && account?.addresses?.identityAddress) {
+        await persistCoveredSpend(
+          chromeStorageService,
+          account.addresses.identityAddress,
+          requestingDomain,
+          requestSats,
+        );
+      }
+      if (wasDuplicate) {
+        console.warn(
+          `[BRC-73] tx ${sendRes.txid} already broadcast in this session; budget not double-counted`,
+        );
+      }
+
+      sendResponse({
+        type: YoursEventName.SEND_BSV,
+        success: true,
+        data: { txid: sendRes.txid, rawtx: sendRes.rawtx },
+      });
+      // Clear the requestingDomain slot so subsequent uncovered
+      // requests don't see it carry over.
+      chromeStorageService.remove('requestingDomain');
+      return true;
+    } catch (error) {
+      console.warn('[BRC-73] background auto-resolve threw; falling back to popup', error);
+      return false;
+    }
+  };
+
   // Important note: We process the InscribeRequest as a SendBsv request.
-  const processSendBsvRequest = (
-    message: { params: { data: SendBsv[] | InscribeRequest[] | LockRequest[] } },
+  const processSendBsvRequest = async (
+    message: { params: { data: SendBsv[] | InscribeRequest[] | LockRequest[]; domain?: string } },
     sendResponse: CallbackResponse,
   ) => {
     if (!message.params.data) {
@@ -820,7 +1092,6 @@ if (isInServiceWorker) {
       return;
     }
     try {
-      responseCallbackForSendBsvRequest = sendResponse;
       let sendBsvRequest = message.params.data as SendBsv[];
 
       // If in this if block, it's an inscribe() request.
@@ -845,6 +1116,17 @@ if (isInServiceWorker) {
         sendBsvRequest = convertLockReqToSendBsvReq(lockRequest);
       }
 
+      // BRC-73: try background auto-resolve first. If covered, the
+      // request is fully processed without ever opening the popup.
+      // Only fall through to the legacy popup flow when not covered.
+      const autoResolved = await tryAutoResolveSendBsv(
+        message.params.domain,
+        sendBsvRequest,
+        sendResponse,
+      );
+      if (autoResolved) return;
+
+      responseCallbackForSendBsvRequest = sendResponse;
       chromeStorageService.update({ sendBsvRequest }).then(() => {
         launchPopUp();
       });
@@ -1242,7 +1524,9 @@ if (isInServiceWorker) {
     chromeStorageService.getAndSetStorage().then((res) => {
       if (res?.popupWindowId) {
         removeWindow(res.popupWindowId);
-        chromeStorageService.remove([...types, 'popupWindowId']);
+        // Always clear `requestingDomain` alongside the typed request
+        // slot so the next request starts with a fresh BRC-73 lookup.
+        chromeStorageService.remove([...types, 'popupWindowId', 'requestingDomain']);
       }
     });
   };

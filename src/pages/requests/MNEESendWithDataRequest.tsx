@@ -27,9 +27,17 @@ import { formatNumberWithCommasAndDecimals, truncate } from '../../utils/format'
 import { sleep } from '../../utils/sleep';
 import { sendMessage, removeWindow } from '../../utils/chromeHelpers';
 import { useServiceContext } from '../../hooks/useServiceContext';
+import { useGroupCoverage } from '../../hooks/useGroupCoverage';
 import { getErrorMessage } from '../../utils/tools';
 import { MNEE_DECIMALS, MNEE_ICON_URL } from '../../utils/constants';
 import type { SendMNEEWithData } from '../../services/types/mnee.types';
+
+// BRC-73: MNEE-with-data auto-resolve deferred to v1.1 — same blocker
+// as MNEESendRequest (mneeService.transfer requires WIF and the
+// keysService.brc73Covered flag does not yet propagate through the
+// MNEE cosign service path). Coverage hook is invoked so future
+// Settings UI can surface the granted basket access; per-tx prompt
+// remains in v1.
 
 const Icon = styled.img`
   width: 3.5rem;
@@ -62,6 +70,9 @@ export const MNEESendWithDataRequest = (props: MNEESendWithDataRequestProps) => 
   const { mneeService, keysService, chromeStorageService } = useServiceContext();
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+
+  // Coverage detection only in v1; see top-of-file note.
+  useGroupCoverage();
 
   useEffect(() => {
     handleSelect('bsv');

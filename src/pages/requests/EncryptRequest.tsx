@@ -9,6 +9,7 @@ import { useBottomMenu } from '../../hooks/useBottomMenu';
 import { useSnackbar } from '../../hooks/useSnackbar';
 import { useTheme } from '../../hooks/useTheme';
 import { useServiceContext } from '../../hooks/useServiceContext';
+import { useGroupCoverage } from '../../hooks/useGroupCoverage';
 import { removeWindow, sendMessage } from '../../utils/chromeHelpers';
 import { encryptUsingPrivKey } from '../../utils/crypto';
 import { getPrivateKeyFromTag, Keys } from '../../utils/keys';
@@ -34,15 +35,42 @@ export const EncryptRequest = (props: EncryptRequestProps) => {
   const [encryptedMessages, setEncryptedMessages] = useState<string[] | undefined>(undefined);
   const { addSnackbar, message } = useSnackbar();
   const { chromeStorageService, keysService } = useServiceContext();
+  const { withBrc73Coverage } = keysService;
   const [hasEncrypted, setHasEncrypted] = useState(false);
   const isPasswordRequired = chromeStorageService.isPasswordRequired();
   const [isProcessing, setIsProcessing] = useState(false);
+
+  // BRC-73: protocol coverage on `request.tag.label` (defaults to
+  // 'yours' to match the existing fallback at handleEncryption()
+  // line 78). Apps grant `[0, 'yours']` or a custom tag label to
+  // auto-resolve.
+  const protocolName = request?.tag?.label ?? 'yours';
+  const { loaded: brc73Loaded, check: brc73Check } = useGroupCoverage();
+  const coverage = brc73Loaded
+    ? brc73Check({ kind: 'protocol', protocolID: [0, protocolName] })
+    : null;
 
   useEffect(() => {
     if (hasEncrypted || isPasswordRequired || !request) return;
     handleEncryption();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasEncrypted, isPasswordRequired, request]);
+
+  // BRC-73 auto-resolve: when manifest covers this encryption (and
+  // we haven't already auto-resolved via the !isPasswordRequired
+  // path above), wrap with withBrc73Coverage so retrieveKeys
+  // bypasses the password gate.
+  useEffect(() => {
+    if (hasEncrypted || !coverage?.covered || !request) return;
+    if (!isPasswordRequired) return; // Already covered by the legacy effect above.
+    setHasEncrypted(true); // Pre-flag so the JSX !hasEncrypted gate hides the prompt.
+    setTimeout(async () => {
+      await withBrc73Coverage(async () => {
+        await handleEncryption();
+      });
+    }, 100);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coverage?.covered, hasEncrypted, isPasswordRequired]);
 
   useEffect(() => {
     handleSelect('bsv');

@@ -66,6 +66,13 @@ export type ConnectRequest = {
   appName: string;
   domain: string;
   isAuthorized: boolean;
+  /**
+   * BRC-73: optional app-passed group-permissions manifest. Used as a
+   * fallback when the canonical `https://{domain}/manifest.json` fetch
+   * fails (e.g., local dev, m2m scenarios). ConnectRequest popup
+   * validates the shape before treating it as a real grant.
+   */
+  manifest?: import('./brc73.types').GroupPermissions;
 };
 
 export interface ChromeStorageObject {
@@ -94,6 +101,14 @@ export interface ChromeStorageObject {
   generateTaggedKeysRequest?: TaggedDerivationRequest;
   encryptRequest?: EncryptRequest;
   decryptRequest?: DecryptRequest;
+  /**
+   * Origin (window.location.hostname) of the app that issued the
+   * currently-pending request. Set by background.ts alongside any
+   * request slot above; cleared when the request resolves. Used by
+   * BRC-73 coverage checks to look up the granted manifest in the
+   * current account's whitelist.
+   */
+  requestingDomain?: string;
 }
 
 export type CurrentAccountObject = Omit<
@@ -113,6 +128,7 @@ export type CurrentAccountObject = Omit<
   | 'generateTaggedKeysRequest'
   | 'encryptRequest'
   | 'decryptRequest'
+  | 'requestingDomain'
 > & { account: Account };
 
 type AppState = {

@@ -13,6 +13,7 @@ import { sleep } from '../../utils/sleep';
 import { sendMessage, removeWindow } from '../../utils/chromeHelpers';
 import { SendBsv } from 'yours-wallet-provider';
 import { useServiceContext } from '../../hooks/useServiceContext';
+import { useGroupCoverage } from '../../hooks/useGroupCoverage';
 import { getErrorMessage, getTxFromRawTxFormat } from '../../utils/tools';
 import { IndexContext } from 'spv-store';
 import TxPreview from '../../components/TxPreview';
@@ -39,7 +40,7 @@ export const BsvSendRequest = (props: BsvSendRequestProps) => {
   const { addSnackbar, message } = useSnackbar();
   const { bsvService, chromeStorageService, keysService, oneSatSPV } = useServiceContext();
   const { sendBsv, updateBsvBalance, getBsvBalance } = bsvService;
-  const { bsvAddress } = keysService;
+  const { bsvAddress, withBrc73Coverage } = keysService;
   const [hasSent, setHasSent] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [txData, setTxData] = useState<IndexContext>();
@@ -53,7 +54,21 @@ export const BsvSendRequest = (props: BsvSendRequestProps) => {
   const requestSats = request.reduce((a: number, item: { satoshis: number }) => a + item.satoshis, 0);
   const bsvSendAmount = requestSats / BSV_DECIMAL_CONVERSION;
 
-  const processBsvSend = async (showPreview = false) => {
+  // BRC-73: short-circuit the per-tx prompt when the requesting app
+  // has a granted manifest with sufficient spending budget.
+  const { loaded: brc73Loaded, check: brc73Check, recordCoveredSpend } = useGroupCoverage();
+  const coverage = brc73Loaded ? brc73Check({ kind: 'spending', sats: requestSats }) : null;
+
+  /**
+   * Returns 'success' on broadcast (or rawtx-only preview path),
+   * 'validation-failed' on bad address / script / data, 'error' on
+   * send/broadcast error, 'aborted' on internal exception. Used by
+   * the auto-resolve effect to decide whether to close the popup or
+   * fall back to the manual Approve UI when an auto-attempt fails.
+   */
+  const processBsvSend = async (
+    showPreview = false,
+  ): Promise<'success' | 'validation-failed' | 'error' | 'aborted'> => {
     try {
       const validationFail = new Map<string, boolean>();
       validationFail.set('address', false);
@@ -94,12 +109,12 @@ export const BsvSendRequest = (props: BsvSendRequestProps) => {
 
       if (validationErrorMessage) {
         addSnackbar(validationErrorMessage, 'error');
-        return;
+        return 'validation-failed';
       }
 
       if (request[0].address && !request[0].satoshis) {
         addSnackbar('No sats supplied', 'info');
-        return;
+        return 'validation-failed';
       }
 
       const sendRes = await sendBsv(request, passwordConfirm, noApprovalLimit, showPreview);
@@ -107,16 +122,24 @@ export const BsvSendRequest = (props: BsvSendRequestProps) => {
         const tx = getTxFromRawTxFormat(sendRes.rawtx, 'tx');
         const parsedTx = await oneSatSPV.parseTx(tx);
         setTxData(parsedTx);
-        return;
+        return 'success';
       }
 
       if (!sendRes.txid || sendRes.error) {
         addSnackbar(getErrorMessage(sendRes.error), 'error');
-        return;
+        return 'error';
       }
 
       setSuccessTxId(sendRes.txid);
       addSnackbar('Transaction Successful!', 'success');
+
+      // BRC-73: if this send was auto-approved under a granted
+      // manifest's spending authorization, persist the spend so the
+      // rolling-window budget reflects what's been used.
+      if (coverage?.covered) {
+        await recordCoveredSpend(requestSats);
+      }
+
       await sleep(2000);
       onResponse();
 
@@ -127,8 +150,10 @@ export const BsvSendRequest = (props: BsvSendRequestProps) => {
           rawtx: sendRes.rawtx,
         });
       }
+      return 'success';
     } catch (error) {
       console.log(error);
+      return 'aborted';
     } finally {
       setIsProcessing(false);
     }
@@ -136,9 +161,13 @@ export const BsvSendRequest = (props: BsvSendRequestProps) => {
 
   useEffect(() => {
     if (!request) return;
+    // Skip the preview render when the request is already covered by a
+    // BRC-73 manifest — we're about to auto-resolve and don't want a
+    // flash of preview UI.
+    if (coverage?.covered) return;
     processBsvSend(true); // Show preview
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [request]);
+  }, [request, coverage?.covered]);
 
   // This useEffect used to auto process requests when an approval limit is set
   useEffect(() => {
@@ -155,6 +184,37 @@ export const BsvSendRequest = (props: BsvSendRequestProps) => {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bsvSendAmount, hasSent, noApprovalLimit]);
+
+  // BRC-73 auto-resolve: if the requesting app's granted manifest covers
+  // this spend, fire the same processBsvSend() the user would trigger
+  // by clicking Approve, then close the popup. Wrapped in
+  // withBrc73Coverage so keysService.retrieveKeys bypasses password
+  // verification — the user already pre-authorized at connect-time.
+  //
+  // If the auto-attempt fails (validation, broadcast error, exception),
+  // reset hasSent so the user sees the manual Approve UI as a fallback
+  // — they can correct the request, retry, or cancel. Without this, the
+  // popup gets stuck rendering nothing because the `!hasSent` JSX gate
+  // is closed and there's no path back.
+  useEffect(() => {
+    if (hasSent) return;
+    if (!coverage?.covered) return;
+    if (!request || request.length === 0) return;
+    setHasSent(true);
+    setTimeout(async () => {
+      setIsProcessing(true);
+      const result = await withBrc73Coverage(async () => {
+        return await processBsvSend();
+      });
+      setIsProcessing(false);
+      await updateBsvBalance();
+      if (result !== 'success') {
+        // Roll back the hasSent gate so the Approve UI renders.
+        setHasSent(false);
+      }
+    }, 100);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coverage?.covered, hasSent]);
 
   // This useEffect used to process yours wallet donations within the app
   useEffect(() => {
