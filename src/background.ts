@@ -47,7 +47,11 @@ import { ContractService } from './services/Contract.service';
 import { BsvService } from './services/Bsv.service';
 import { checkGroupCoverage, findGrantedManifest } from './services/manifest/checkGroupCoverage';
 import { persistCoveredSpend } from './services/manifest/recordSpend';
-import { TxidDedupTracker } from './utils/txidDedupTracker';
+import {
+  TxidDedupTracker,
+  loadDedupTrackerState,
+  type DedupStorageReader,
+} from './utils/txidDedupTracker';
 import { mapOrdinal, mapGpOrdinal, mapBsv20TxoToOrdinal } from './utils/providerHelper';
 import { TxoLookup, TxoSort } from 'spv-store';
 import { initOneSatSPV } from './initSPVStore';
@@ -974,13 +978,50 @@ if (isInServiceWorker) {
    * Recently broadcasted txids from BRC-73 auto-resolve flows. Used to
    * dedupe budget increments when the wallet's UTXO selector rebuilds
    * the same tx (same inputs → same signed bytes → same txid) and
-   * re-broadcasts it idempotently. Bounded; in-memory only (resets
-   * on service-worker restart, which is fine — restart triggers a
-   * fresh SPV sync that resolves the stale-UTXO root cause).
-   * See `src/utils/txidDedupTracker.ts` for capacity / eviction
-   * semantics.
+   * re-broadcasts it idempotently. Bounded.
+   *
+   * **Persisted across service-worker restarts** (LAUNCH_RUNBOOK B1):
+   * pre-2026-05-02 this was in-memory only, which left a window where
+   * an SW eviction within seconds of a sendBsv broadcast could let
+   * the immediately-retried request double-count against the rolling-
+   * window spending budget (re-broadcast hits "already on network",
+   * dedup state is empty after restart so it looks fresh, and
+   * recordSpend fires twice for one on-chain tx).
+   *
+   * Storage key `brc73DedupTxids` lives under chrome.storage.local;
+   * load is fire-and-forget (the tracker constructs immediately with
+   * empty state and seeds itself once the read resolves). Persist is
+   * fire-and-forget per `track()` of a NEW txid. Failures are
+   * advisory — in-memory state is authoritative for the current SW
+   * lifetime even if persistence is broken.
    */
-  const broadcastDedupTracker = new TxidDedupTracker();
+  const BRC73_DEDUP_STORAGE_KEY = 'brc73DedupTxids';
+  const dedupStorageReader: DedupStorageReader = {
+    get: async (key) => {
+      const result = await chrome.storage.local.get(key);
+      return (result as Record<string, unknown>)[key];
+    },
+  };
+  const broadcastDedupTracker = new TxidDedupTracker({
+    persist: (txids) => {
+      // Fire-and-forget; chrome.storage.local writes are async + queued
+      // internally. Errors are surfaced by chrome at the runtime.lastError
+      // boundary which we don't read here — the next track() will try
+      // again, and the in-memory state is authoritative anyway.
+      void chrome.storage.local.set({ [BRC73_DEDUP_STORAGE_KEY]: [...txids] });
+    },
+  });
+  // Async seed from prior SW lifetime. Safe to run after construction
+  // because no caller hits track() before the listeners are wired, and
+  // even if a listener fires before the seed resolves, the worst-case
+  // is one missed dedup for one txid in the first second after restart
+  // (acceptable per the LAUNCH_RUNBOOK B1 risk analysis).
+  void loadDedupTrackerState(dedupStorageReader, BRC73_DEDUP_STORAGE_KEY).then((seed) => {
+    if (seed.length === 0) return;
+    for (const txid of seed) {
+      broadcastDedupTracker.track(txid);
+    }
+  });
 
   /**
    * BRC-73 background-side auto-resolve for sendBsv. Returns true if
