@@ -40,6 +40,7 @@ import { useServiceContext } from '../hooks/useServiceContext';
 import { LockData } from '../services/types/bsv.types';
 import { sendMessage } from '../utils/chromeHelpers';
 import { computeTokenAutoAdd } from '../utils/tokenAutoAdd';
+import { shouldOverwriteBsv20sCache } from '../utils/bsv20RefreshPolicy';
 import { readDisplayCache, writeBsv20sCache, keyFromAccount } from '../services/DisplayCache.service';
 import { YoursEventName } from '../inject';
 import { InWalletBsvResponse } from '../services/types/bsv.types';
@@ -338,14 +339,13 @@ export const BsvWallet = (props: BsvWalletProps) => {
   const getAndSetAccountAndBsv20s = async () => {
     const res = await ordinalService.getBsv20s();
 
-    // Phase 2.5 hotfix (Robert click-test 2026-04-25): only update
-    // bsv20s state + cache when the refresh actually returned data.
-    // spv-store's getBsv20s() returns empty array while ordinal index
-    // sync is incomplete — overwriting our cache-seeded state with []
-    // makes Pumpkin disappear from Coins even though favorites still
-    // contains it (his exact screenshot). Same "no-regress" principle
-    // as the height-aware mergeUniqueByTxid fix.
-    if (res && res.length > 0) {
+    // Refresh policy lives in src/utils/bsv20RefreshPolicy.ts. Empty
+    // arrays from this fetch are now treated as authoritative
+    // zero-holdings (GP's /api/bsv20/balance is the data source, not
+    // spv-store) so legitimately drained tokens stop showing in the
+    // UI. The pre-2026-05-02 `res.length > 0` gate caused the
+    // cucumber stale-cache regression; see the helper's docstring.
+    if (shouldOverwriteBsv20sCache(res)) {
       // Phase 2.5 final polish: GP's bsv20/balance returns icon=null
       // for many tokens even when the deploy tx inscription has one.
       // Enrich BSV-21 tokens via the metadata endpoint (id-based,
