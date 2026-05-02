@@ -17,6 +17,7 @@ import { broadcastMultiSource } from '../utils/broadcast';
 import { getTxWithFallback } from '../utils/txFetch';
 import { WhatsOnChainService } from './WhatsOnChain.service';
 import type { ChromeStorageService } from './ChromeStorage.service';
+import { checkServiceAuth } from './manifest/authGate';
 export class ContractService {
   constructor(
     private readonly keysService: KeysService,
@@ -31,18 +32,13 @@ export class ContractService {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): Promise<{ sigResponses?: SignatureResponse[]; error?: { message: string; cause?: any } }> => {
     try {
-      // BRC-73 auto-resolve: when the popup-side handler sets
-      // keysService.brc73Covered, the calling app's granted manifest
-      // covers this signing operation (typically via spendingAuthorization
-      // for AMM funding signatures, or per-protocol coverage for typed
-      // sig requests). Skip the early verifyPassword gate so the empty
-      // password used in auto-resolve doesn't reject — same bypass pattern
-      // as Bsv.service.ts:sendBsv. retrieveKeys honors the same flag.
-      if (!this.keysService.brc73Covered) {
-        const isAuthenticated = await this.keysService.verifyPassword(password);
-        if (!isAuthenticated) {
-          throw new Error('invalid-password');
-        }
+      // BRC-73 service-layer gate via the canonical helper. Returns
+      // ok=true when keysService.brc73Covered is set (auto-resolve)
+      // OR when the password verifies (manual flow). retrieveKeys +
+      // retrievePrivateKeyMap honor brc73Covered downstream.
+      const auth = await checkServiceAuth(this.keysService, password);
+      if (!auth.ok) {
+        throw new Error(auth.reason ?? 'invalid-password');
       }
 
       const keys = await this.keysService.retrieveKeys(password);

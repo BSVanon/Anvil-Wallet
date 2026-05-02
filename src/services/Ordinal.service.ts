@@ -28,6 +28,7 @@ import { theme } from '../theme';
 import { GorillaPoolService } from './GorillaPool.service';
 import { Token } from './types/gorillaPool.types';
 import { WhatsOnChainService } from './WhatsOnChain.service';
+import { checkServiceAuth } from './manifest/authGate';
 import { broadcastMultiSource } from '../utils/broadcast';
 import { getTxWithFallback } from '../utils/txFetch';
 
@@ -117,18 +118,11 @@ export class OrdinalService {
     password: string,
   ): Promise<OrdOperationResponse> => {
     try {
-      // BRC-73 auto-resolve: when popup-side handler set
-      // keysService.brc73Covered, the calling app's granted manifest
-      // covers this transfer via basket access (BRC-46 'ordinals' basket
-      // — see OrdTransferRequest's useGroupCoverage check). Skip the
-      // early verifyPassword gate; retrieveKeys honors the same flag.
-      // LAUNCH_RUNBOOK B1 follow-up.
-      if (!this.keysService.brc73Covered) {
-        const isAuthenticated = await this.keysService.verifyPassword(password);
-        if (!isAuthenticated) {
-          return { error: 'invalid-password' };
-        }
-      }
+      // BRC-73 service-layer gate via the canonical helper.
+      // OrdTransferRequest's useGroupCoverage covers via the BRC-46
+      // 'ordinals' basket. retrieveKeys honors the flag downstream.
+      const auth = await checkServiceAuth(this.keysService, password);
+      if (!auth.ok) return { error: auth.reason ?? 'invalid-password' };
 
       const ordinal = await this.oneSatSPV.getTxo(new Outpoint(outpoint));
       if (!ordinal) {
@@ -301,17 +295,10 @@ export class OrdinalService {
 
   sendBSV20 = async (idOrTick: string, destinationAddress: string, amount: bigint, password: string) => {
     try {
-      // BRC-73 auto-resolve: same bypass pattern as transferOrdinal +
-      // purchaseGlobalOrderbookListing. Bsv20SendRequest popup wires
-      // useGroupCoverage + withBrc73Coverage; this gate is the
-      // service-layer block. retrieveKeys honors the same flag.
-      // LAUNCH_RUNBOOK B1 follow-up.
-      if (!this.keysService.brc73Covered) {
-        const isAuthenticated = await this.keysService.verifyPassword(password);
-        if (!isAuthenticated) {
-          return { error: 'invalid-password' };
-        }
-      }
+      // BRC-73 service-layer gate via the canonical helper.
+      // Bsv20SendRequest popup covers via spendingAuthorization.
+      const auth = await checkServiceAuth(this.keysService, password);
+      if (!auth.ok) return { error: auth.reason ?? 'invalid-password' };
       const keys = await this.keysService.retrieveKeys(password);
       if (!keys?.ordAddress || !keys.ordWif || !keys.walletAddress || !keys.walletWif) {
         return { error: 'no-keys' };
@@ -515,20 +502,11 @@ export class OrdinalService {
   ) => {
     try {
       const { marketplaceAddress, marketplaceRate, password } = purchaseOrdinal;
-      // BRC-73 auto-resolve: when the popup-side handler set
-      // keysService.brc73Covered, the calling app's granted manifest
-      // covers this purchase via spendingAuthorization (price + market
-      // fee summed and pre-checked at the popup). Skip the early
-      // verifyPassword gate — same bypass pattern as Bsv.service.sendBsv
-      // and Contract.service.getSignatures. retrieveKeys honors the
-      // same flag below. LAUNCH_RUNBOOK B1 follow-up (1 of 7 remaining
-      // BRC-73 handler bypasses).
-      if (!this.keysService.brc73Covered) {
-        const isAuthenticated = await this.keysService.verifyPassword(password);
-        if (!isAuthenticated) {
-          return { error: 'invalid-password' };
-        }
-      }
+      // BRC-73 service-layer gate via the canonical helper.
+      // OrdPurchaseRequest popup covers via spendingAuthorization
+      // (price + market fee pre-checked at the popup).
+      const auth = await checkServiceAuth(this.keysService, password);
+      if (!auth.ok) return { error: auth.reason ?? 'invalid-password' };
       const keys = await this.keysService.retrieveKeys(password);
 
       if (!keys.walletWif || !keys.ordWif) return { error: 'no-keys' };
