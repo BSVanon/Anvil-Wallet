@@ -74,6 +74,59 @@ export class TxidDedupTracker {
   }
 
   /**
+   * Atomically merge a persisted snapshot UNDER any post-construction
+   * tracks. Use this instead of replaying the snapshot through
+   * `track()` after the tracker is already in use — replay-via-track
+   * would treat each seed entry as the NEWEST insertion, pushing
+   * fresh post-construction tracks past the capacity boundary and
+   * evicting them out of the insertion order. The retry of an
+   * evicted-fresh tx would then look unseen and double-count the
+   * budget — the exact race scenario B1 was meant to close.
+   *
+   * Codex review `2d78f6a85bb7d33c` (2026-05-02) caught the original
+   * track-replay implementation; this method is the atomic-merge
+   * fix. Ordering preserved as
+   *   insertionOrder = [seed_chronological..., post_construction_tracks...]
+   * with capacity enforced by dropping the OLDEST entries first
+   * (i.e. seed entries get dropped before post-construction tracks
+   * when capacity-bound, matching the dedup tracker's "fresh activity
+   * matters more than stale" semantics).
+   *
+   * Does NOT call `persist`; the caller is loading state, not adding
+   * new spend records. The next `track()` of a NEW txid will persist
+   * a fresh snapshot reflecting the merged state.
+   */
+  mergeSeed(seed: ReadonlyArray<string>): void {
+    // 1) Sanitize: drop non-strings, empty strings, and entries
+    //    already present from post-construction tracks. Dedupe within
+    //    the seed itself.
+    const seedSeen = new Set<string>();
+    const cleanSeed: string[] = [];
+    for (const txid of seed) {
+      if (typeof txid !== 'string' || txid.length === 0) continue;
+      if (this.seen.has(txid)) continue; // post-construction track wins
+      if (seedSeen.has(txid)) continue;
+      seedSeen.add(txid);
+      cleanSeed.push(txid);
+    }
+
+    // 2) Compose: seed (oldest) followed by existing post-construction
+    //    tracks (newer). Trim to capacity from the FRONT so the newest
+    //    entries — i.e. the ones a retry might rebroadcast — survive.
+    const merged = [...cleanSeed, ...this.insertionOrder];
+    const trimmed =
+      merged.length > this.capacity ? merged.slice(merged.length - this.capacity) : merged;
+
+    // 3) Rebuild internal state from the trimmed merged list.
+    this.seen.clear();
+    this.insertionOrder.length = 0;
+    for (const txid of trimmed) {
+      this.seen.add(txid);
+      this.insertionOrder.push(txid);
+    }
+  }
+
+  /**
    * Record a txid. Returns true if the txid was already present (a
    * duplicate); returns false if it's new. Trims to capacity by
    * dropping the oldest insertion. Fires the persist callback only

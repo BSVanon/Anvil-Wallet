@@ -1011,16 +1011,14 @@ if (isInServiceWorker) {
       void chrome.storage.local.set({ [BRC73_DEDUP_STORAGE_KEY]: [...txids] });
     },
   });
-  // Async seed from prior SW lifetime. Safe to run after construction
-  // because no caller hits track() before the listeners are wired, and
-  // even if a listener fires before the seed resolves, the worst-case
-  // is one missed dedup for one txid in the first second after restart
-  // (acceptable per the LAUNCH_RUNBOOK B1 risk analysis).
+  // Async seed from prior SW lifetime — installed via mergeSeed (NOT
+  // replayed through track) so a fresh post-construction track is
+  // never evicted by stale seed entries filling the capacity. Codex
+  // review `2d78f6a85bb7d33c` caught the original track-replay
+  // implementation racing in exactly this way.
   void loadDedupTrackerState(dedupStorageReader, BRC73_DEDUP_STORAGE_KEY).then((seed) => {
     if (seed.length === 0) return;
-    for (const txid of seed) {
-      broadcastDedupTracker.track(txid);
-    }
+    broadcastDedupTracker.mergeSeed(seed);
   });
 
   /**
