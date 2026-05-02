@@ -31,9 +31,18 @@ export class ContractService {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): Promise<{ sigResponses?: SignatureResponse[]; error?: { message: string; cause?: any } }> => {
     try {
-      const isAuthenticated = await this.keysService.verifyPassword(password);
-      if (!isAuthenticated) {
-        throw new Error('invalid-password');
+      // BRC-73 auto-resolve: when the popup-side handler sets
+      // keysService.brc73Covered, the calling app's granted manifest
+      // covers this signing operation (typically via spendingAuthorization
+      // for AMM funding signatures, or per-protocol coverage for typed
+      // sig requests). Skip the early verifyPassword gate so the empty
+      // password used in auto-resolve doesn't reject — same bypass pattern
+      // as Bsv.service.ts:sendBsv. retrieveKeys honors the same flag.
+      if (!this.keysService.brc73Covered) {
+        const isAuthenticated = await this.keysService.verifyPassword(password);
+        if (!isAuthenticated) {
+          throw new Error('invalid-password');
+        }
       }
 
       const keys = await this.keysService.retrieveKeys(password);

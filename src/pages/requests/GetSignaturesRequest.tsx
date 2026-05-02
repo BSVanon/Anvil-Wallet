@@ -47,11 +47,24 @@ export const GetSignaturesRequest = (props: GetSignaturesRequestProps) => {
   const { bsvAddress, ordAddress, identityAddress } = keysService;
   const { request, onSignature, popupId } = props;
 
-  // BRC-73: every sig request must be covered. If any requested
-  // protocolID isn't in the granted manifest, fall through to the
-  // per-tx prompt (signing is all-or-nothing — partial coverage isn't
-  // safe).
-  const { loaded: brc73Loaded, check: brc73Check } = useGroupCoverage();
+  // BRC-73: a sig request is "covered" iff EITHER
+  //   (a) every per-input sigRequest carries an explicit protocolID
+  //       that matches a granted protocolPermission entry, OR
+  //   (b) the user's net spend on the tx is within the granted
+  //       spendingAuthorization budget.
+  //
+  // (a) is the typed-protocol path used by BRC-43-aware apps that
+  // pass a protocolID on each SignatureRequest. (b) is the
+  // app-funded-tx path used by the YoursToBRC100Shim: when the DEX
+  // calls createAction/signAction, the shim invokes getSignatures on
+  // the user's own P2PKH inputs WITHOUT a protocolID. The semantic
+  // there is "the user is funding this tx with sats" — that's exactly
+  // what spendingAuthorization grants. Without (b), every AMM swap /
+  // pool deposit / pool withdraw double-popups the user (createAction
+  // + signAction = two getSignatures calls = two prompts). Robert's
+  // 2026-05-02 cucumber-pool feedback was three repeat reports of
+  // this behavior.
+  const { loaded: brc73Loaded, check: brc73Check, recordCoveredSpend } = useGroupCoverage();
   const sigCoverages = brc73Loaded
     ? request.sigRequests.map((r) => {
         const protocolName =
@@ -68,6 +81,18 @@ export const GetSignaturesRequest = (props: GetSignaturesRequestProps) => {
   const allSigsCovered =
     !!sigCoverages && sigCoverages.length > 0 && sigCoverages.every((c) => c.covered);
   const [satsOut, setSatsOut] = useState(0);
+  const [satsComputed, setSatsComputed] = useState(false);
+  /**
+   * Whether the parseTx call that produced txData succeeded against
+   * the SPV indexer. False after the 6s timeout/error fallback path
+   * — in that case spends/txos are empty stubs and `satsOut`
+   * computed from them isn't a real measurement of the user's net
+   * spend. Spending-coverage auto-resolve MUST gate on this; a
+   * degraded indexer would otherwise let `satsOut=0` flip
+   * `spendingCovered=true` for any active grant and silently sign
+   * an unverified request. Codex review 4e3a58711e185d49 (HIGH).
+   */
+  const [parseTxTrusted, setParseTxTrusted] = useState(false);
   const [getSigsResponse, setGetSigsResponse] = useState<{
     sigResponses?: SignatureResponse[] | undefined;
     error?:
@@ -102,9 +127,26 @@ export const GetSignaturesRequest = (props: GetSignaturesRequestProps) => {
       }, userSatsOut);
 
       setSatsOut(Number(userSatsOut));
+      setSatsComputed(true);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [txData]);
+
+  // BRC-73 spending coverage — re-evaluated when satsOut settles.
+  // Uses Math.max(0, satsOut) so a refund-shaped tx (user receives
+  // more than they spend) still falls into the covered branch
+  // (canSpend(sats=0) is the trivial true case for any active grant).
+  //
+  // GATE on `parseTxTrusted`: when the SPV-store fallback fired,
+  // satsOut reflects empty spends/txos arrays (every input/output
+  // looked like 0 sats to the user-ownership checker), not the
+  // actual on-chain impact. Allowing auto-resolve in that state
+  // would silently sign requests whose true net spend was never
+  // measured. Force the manual prompt in degraded-indexer mode.
+  const spendingCovered =
+    brc73Loaded && satsComputed && parseTxTrusted
+      ? brc73Check({ kind: 'spending', sats: Math.max(0, satsOut) }).covered
+      : false;
 
   useEffect(() => {
     (async () => {
@@ -134,6 +176,8 @@ export const GetSignaturesRequest = (props: GetSignaturesRequestProps) => {
           txos: [],
         } as unknown as IndexContext;
         setTxData(fallback);
+        // Leave parseTxTrusted=false so the spending-coverage
+        // auto-resolve refuses to fire on this stub.
         console.warn(
           '[GetSignaturesRequest] oneSatSPV.parseTx ' +
             (parsed === 'timeout' ? 'timed out after 6s' : 'errored') +
@@ -141,6 +185,7 @@ export const GetSignaturesRequest = (props: GetSignaturesRequestProps) => {
         );
       } else {
         setTxData(parsed);
+        setParseTxTrusted(true);
       }
       setIsLoading(false);
     })();
@@ -202,18 +247,30 @@ export const GetSignaturesRequest = (props: GetSignaturesRequestProps) => {
     await runSigning(passwordConfirm);
   };
 
-  // BRC-73 auto-resolve: covered tx-signing requests fire runSigning
-  // under withBrc73Coverage. All sig requests must be covered.
+  // BRC-73 auto-resolve: fires when EITHER the per-protocol coverage
+  // path (allSigsCovered) OR the spending-budget path (spendingCovered)
+  // applies. Spending-covered branch records the spend against the
+  // rolling-window budget so the user is reprompted once the limit is
+  // reached. Protocol-covered branch is a free-of-charge auth grant
+  // (no budget impact).
   useEffect(() => {
-    if (hasSent || !allSigsCovered || !txData) return;
+    if (hasSent || !txData) return;
+    if (!allSigsCovered && !spendingCovered) return;
     setHasSent(true);
     setTimeout(async () => {
       await withBrc73Coverage(async () => {
         await runSigning('');
       });
+      if (spendingCovered && !allSigsCovered && satsOut > 0) {
+        try {
+          await recordCoveredSpend(satsOut);
+        } catch (err) {
+          console.warn('[BRC-73] recordCoveredSpend failed', err);
+        }
+      }
     }, 100);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allSigsCovered, hasSent, txData]);
+  }, [allSigsCovered, spendingCovered, hasSent, txData, satsOut]);
 
   const clearRequest = async () => {
     sendMessage({

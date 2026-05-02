@@ -46,6 +46,29 @@ describe('checkGroupCoverage — spending', () => {
     expect(r.covered).toBe(false);
     expect(r.reason).toMatch(/budget exhausted/);
   });
+
+  /**
+   * GetSignaturesRequest spending-coverage path (Path-B BRC-73 wiring,
+   * 2026-05-02). The shim's signWalletOwnedInputs invokes
+   * provider.getSignatures WITHOUT a per-input protocolID, so
+   * GetSignaturesRequest falls back to spending-coverage. The popup
+   * computes net `satsOut` from the parsed tx, clamps to
+   * Math.max(0, satsOut), and runs this check. Two scenarios that must
+   * not regress:
+   *   - Refund-shaped tx (user net-receives): satsOut <= 0, the popup
+   *     clamps to 0 and the check trivially covers (no spend occurs).
+   *   - Funded swap/withdraw: satsOut > 0, must be within remaining
+   *     budget for auto-resolve.
+   */
+  it('covers a zero-sats refund-shaped tx when grant is active', () => {
+    const g = buildGranted({ spendingAuthorization: { amount: 500_000, description: '' } });
+    expect(checkGroupCoverage(g, { kind: 'spending', sats: 0 }, T0 + 1).covered).toBe(true);
+  });
+
+  it('falls through for zero-sats when no grant exists (defensive)', () => {
+    const g = buildGranted({});
+    expect(checkGroupCoverage(g, { kind: 'spending', sats: 0 }, T0 + 1).covered).toBe(false);
+  });
 });
 
 describe('checkGroupCoverage — protocol', () => {
