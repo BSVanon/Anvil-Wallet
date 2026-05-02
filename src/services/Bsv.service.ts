@@ -35,6 +35,7 @@ import { PaymailClient } from '@bsv/paymail/client';
 import { convertLockReqToSendBsvReq } from '../utils/tools';
 import { broadcastMultiSource } from '../utils/broadcast';
 import { getTxWithFallback } from '../utils/txFetch';
+import { checkServiceAuth } from './manifest/authGate';
 
 const client = new PaymailClient();
 
@@ -342,9 +343,12 @@ export class BsvService {
     password: string,
   ): Promise<SignedMessage | { error: string } | undefined> => {
     const { message, encoding } = messageToSign;
-    const isAuthenticated = await this.keysService.verifyPassword(password);
-    if (!isAuthenticated) {
-      return { error: 'invalid-password' };
+    // BRC-73 service-layer gate via the canonical helper.
+    // SignMessageRequest popup covers via protocolPermission for the
+    // tagged protocol (BRC-43) the message is being signed under.
+    const auth = await checkServiceAuth(this.keysService, password);
+    if (!auth.ok) {
+      return { error: auth.reason ?? 'invalid-password' };
     }
     try {
       const keys = (await this.keysService.retrieveKeys(password)) as Keys;

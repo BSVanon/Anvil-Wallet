@@ -91,7 +91,11 @@ export const DecryptRequest = (props: DecryptRequestProps) => {
     setIsProcessing(true);
     await sleep(25);
 
-    if (!passwordConfirm && isPasswordRequired) {
+    // BRC-73 auto-resolve flow sets keysService.brc73Covered before
+    // calling this handler with passwordConfirm=''. Skip the empty-
+    // password popup-side gate when covered; retrieveKeys honors
+    // brc73Covered downstream. Mirrors the EncryptRequest fix.
+    if (!passwordConfirm && isPasswordRequired && !keysService.brc73Covered) {
       addSnackbar('You must enter a password!', 'error');
       setIsProcessing(false);
       return;

@@ -95,7 +95,13 @@ export const EncryptRequest = (props: EncryptRequestProps) => {
     setIsProcessing(true);
     await sleep(25);
 
-    if (!passwordConfirm && isPasswordRequired) {
+    // BRC-73 auto-resolve flow sets keysService.brc73Covered before
+    // calling this handler with passwordConfirm=''. Skip the empty-
+    // password popup-side gate when covered; retrieveKeys honors
+    // brc73Covered downstream. Without this skip, the auto-resolve
+    // surfaces a "must enter a password" snackbar instead of running
+    // silently. LAUNCH_RUNBOOK B1 4-of-7.
+    if (!passwordConfirm && isPasswordRequired && !keysService.brc73Covered) {
       addSnackbar('You must enter a password!', 'error');
       setIsProcessing(false);
       return;
