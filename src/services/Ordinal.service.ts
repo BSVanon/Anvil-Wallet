@@ -117,9 +117,17 @@ export class OrdinalService {
     password: string,
   ): Promise<OrdOperationResponse> => {
     try {
-      const isAuthenticated = await this.keysService.verifyPassword(password);
-      if (!isAuthenticated) {
-        return { error: 'invalid-password' };
+      // BRC-73 auto-resolve: when popup-side handler set
+      // keysService.brc73Covered, the calling app's granted manifest
+      // covers this transfer via basket access (BRC-46 'ordinals' basket
+      // — see OrdTransferRequest's useGroupCoverage check). Skip the
+      // early verifyPassword gate; retrieveKeys honors the same flag.
+      // LAUNCH_RUNBOOK B1 follow-up.
+      if (!this.keysService.brc73Covered) {
+        const isAuthenticated = await this.keysService.verifyPassword(password);
+        if (!isAuthenticated) {
+          return { error: 'invalid-password' };
+        }
       }
 
       const ordinal = await this.oneSatSPV.getTxo(new Outpoint(outpoint));
@@ -293,9 +301,16 @@ export class OrdinalService {
 
   sendBSV20 = async (idOrTick: string, destinationAddress: string, amount: bigint, password: string) => {
     try {
-      const isAuthenticated = await this.keysService.verifyPassword(password);
-      if (!isAuthenticated) {
-        return { error: 'invalid-password' };
+      // BRC-73 auto-resolve: same bypass pattern as transferOrdinal +
+      // purchaseGlobalOrderbookListing. Bsv20SendRequest popup wires
+      // useGroupCoverage + withBrc73Coverage; this gate is the
+      // service-layer block. retrieveKeys honors the same flag.
+      // LAUNCH_RUNBOOK B1 follow-up.
+      if (!this.keysService.brc73Covered) {
+        const isAuthenticated = await this.keysService.verifyPassword(password);
+        if (!isAuthenticated) {
+          return { error: 'invalid-password' };
+        }
       }
       const keys = await this.keysService.retrieveKeys(password);
       if (!keys?.ordAddress || !keys.ordWif || !keys.walletAddress || !keys.walletWif) {
@@ -500,9 +515,19 @@ export class OrdinalService {
   ) => {
     try {
       const { marketplaceAddress, marketplaceRate, password } = purchaseOrdinal;
-      const isAuthenticated = await this.keysService.verifyPassword(password);
-      if (!isAuthenticated) {
-        return { error: 'invalid-password' };
+      // BRC-73 auto-resolve: when the popup-side handler set
+      // keysService.brc73Covered, the calling app's granted manifest
+      // covers this purchase via spendingAuthorization (price + market
+      // fee summed and pre-checked at the popup). Skip the early
+      // verifyPassword gate — same bypass pattern as Bsv.service.sendBsv
+      // and Contract.service.getSignatures. retrieveKeys honors the
+      // same flag below. LAUNCH_RUNBOOK B1 follow-up (1 of 7 remaining
+      // BRC-73 handler bypasses).
+      if (!this.keysService.brc73Covered) {
+        const isAuthenticated = await this.keysService.verifyPassword(password);
+        if (!isAuthenticated) {
+          return { error: 'invalid-password' };
+        }
       }
       const keys = await this.keysService.retrieveKeys(password);
 
